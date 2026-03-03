@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import torch
@@ -11,7 +12,7 @@ def save_reconstruction_batch(
     x: torch.Tensor,
     x_hat: torch.Tensor,
     output_path: Path,
-    image_size: int = 28,
+    image_size: int | None = None,
 ) -> None:
     """Saves a side-by-side reconstruction artifact.
 
@@ -22,7 +23,8 @@ def save_reconstruction_batch(
         x: Original tensor with shape ``[batch, D]`` or ``[batch, 1, H, W]``.
         x_hat: Reconstructed tensor with matching shape.
         output_path: Target file path.
-        image_size: Height/width used to reshape flattened vectors.
+        image_size: Optional height/width used to reshape flattened vectors.
+            If ``None`` and vectors are square, it is inferred automatically.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     num_items = min(8, x.shape[0])
@@ -39,7 +41,11 @@ def save_reconstruction_batch(
         except Exception:
             pass
 
-    if original.ndim == 2 and original.shape[1] == image_size * image_size:
+    if image_size is None and original.ndim == 2:
+        size = int(math.sqrt(int(original.shape[1])))
+        image_size = size if size * size == int(original.shape[1]) else None
+
+    if image_size is not None and original.ndim == 2 and original.shape[1] == image_size * image_size:
         try:
             from torchvision.utils import save_image
 

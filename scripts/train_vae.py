@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
+from modules.configs import ConvVAEConfig, ImageConfig, MLPVAEConfig, VQVAEConfig
 from modules.data import DataConfig, create_dataloader
 from modules.vae import BetaVAE, ConvVAE, VanillaVAE
 from modules.vqvae import FSQVAE, VQVAE
@@ -85,6 +86,18 @@ def _init_agg(metric_keys: Iterable[str]) -> Dict[str, float]:
         Mapping from metric name to zero value.
     """
     return {key: 0.0 for key in metric_keys}
+
+
+def _parse_int_tuple(raw: str) -> Tuple[int, ...]:
+    """Parses comma-separated integer text into tuple.
+
+    Args:
+        raw: String like ``"32,64"``.
+
+    Returns:
+        Parsed integer tuple.
+    """
+    return tuple(int(x.strip()) for x in raw.split(",") if x.strip())
 
 
 def train_one_epoch(
@@ -170,8 +183,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dataset", type=str, default="random_binary", choices=["random_binary", "mnist"])
     parser.add_argument("--input-dim", type=int, default=784)
+    parser.add_argument("--image-channels", type=int, default=1)
+    parser.add_argument("--image-height", type=int, default=28)
+    parser.add_argument("--image-width", type=int, default=28)
     parser.add_argument("--latent-dim", type=int, default=16)
     parser.add_argument("--hidden-dims", type=str, default="256,128")
+    parser.add_argument("--conv-channels", type=str, default="32,64")
+    parser.add_argument("--conv-bottleneck-dim", type=int, default=256)
+    parser.add_argument("--vq-decoder-channels", type=str, default="64,32")
     parser.add_argument("--activation", type=str, default="relu")
     parser.add_argument("--beta", type=float, default=4.0)
     parser.add_argument("--num-embeddings", type=int, default=128)
@@ -197,46 +216,81 @@ def build_model_term(args: argparse.Namespace) -> VAETerm:
     Returns:
         Configured VAETerm instance.
     """
-    hidden_dims = [int(x.strip()) for x in args.hidden_dims.split(",") if x.strip()]
+    image_cfg = ImageConfig(
+        channels=args.image_channels,
+        height=args.image_height,
+        width=args.image_width,
+    )
+    hidden_dims = _parse_int_tuple(args.hidden_dims)
+    conv_channels = _parse_int_tuple(args.conv_channels)
+    vq_decoder_channels = _parse_int_tuple(args.vq_decoder_channels)
     if args.model == "vanilla":
-        model = VanillaVAE(
+        mlp_cfg = MLPVAEConfig(
             input_dim=args.input_dim,
             latent_dim=args.latent_dim,
             hidden_dims=hidden_dims,
             activation=args.activation,
+            beta=args.beta,
+        )
+        model = VanillaVAE(
+            input_dim=mlp_cfg.input_dim,
+            latent_dim=mlp_cfg.latent_dim,
+            config=mlp_cfg,
         )
         return VAETerm(model=model, metric_keys=("loss", "recon_loss", "kl_loss"), expects_image_input=False)
     if args.model == "beta":
-        model = BetaVAE(
+        mlp_cfg = MLPVAEConfig(
             input_dim=args.input_dim,
             latent_dim=args.latent_dim,
-            beta=args.beta,
             hidden_dims=hidden_dims,
             activation=args.activation,
+            beta=args.beta,
+        )
+        model = BetaVAE(
+            input_dim=mlp_cfg.input_dim,
+            latent_dim=mlp_cfg.latent_dim,
+            beta=mlp_cfg.beta,
+            config=mlp_cfg,
         )
         return VAETerm(model=model, metric_keys=("loss", "recon_loss", "kl_loss"), expects_image_input=False)
     if args.model == "conv":
+        conv_cfg = ConvVAEConfig(
+            image=image_cfg,
+            latent_dim=args.latent_dim,
+            encoder_channels=conv_channels,
+            bottleneck_dim=args.conv_bottleneck_dim,
+        )
         return VAETerm(
-            model=ConvVAE(latent_dim=args.latent_dim),
+            model=ConvVAE(config=conv_cfg),
             metric_keys=("loss", "recon_loss", "kl_loss"),
             expects_image_input=True,
         )
     if args.model == "vq":
+        vq_cfg = VQVAEConfig(
+            image=image_cfg,
+            embedding_dim=args.latent_dim,
+            encoder_channels=conv_channels,
+            decoder_channels=vq_decoder_channels,
+            num_embeddings=args.num_embeddings,
+            beta=args.beta,
+            fsq_levels=args.fsq_levels,
+        )
         return VAETerm(
-            model=VQVAE(
-                embedding_dim=args.latent_dim,
-                num_embeddings=args.num_embeddings,
-                beta=args.beta,
-            ),
+            model=VQVAE(config=vq_cfg),
             metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
             expects_image_input=True,
         )
+    vq_cfg = VQVAEConfig(
+        image=image_cfg,
+        embedding_dim=args.latent_dim,
+        encoder_channels=conv_channels,
+        decoder_channels=vq_decoder_channels,
+        num_embeddings=args.num_embeddings,
+        beta=args.beta,
+        fsq_levels=args.fsq_levels,
+    )
     return VAETerm(
-        model=FSQVAE(
-            embedding_dim=args.latent_dim,
-            fsq_levels=args.fsq_levels,
-            beta=args.beta,
-        ),
+        model=FSQVAE(config=vq_cfg),
         metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
         expects_image_input=True,
     )
@@ -263,15 +317,22 @@ class ExperimentManager:
         self.paths = create_experiment_paths(log_root=args.log_root)
         self.tb_logger = TensorboardLogger(self.paths.tensorboard_dir)
         self.term = build_model_term(args)
+        effective_input_dim = (
+            args.image_channels * args.image_height * args.image_width
+            if self.term.expects_image_input
+            else args.input_dim
+        )
 
         data_config = DataConfig(
             dataset=args.dataset,
-            input_dim=args.input_dim,
+            input_dim=effective_input_dim,
             num_samples=args.num_samples,
             batch_size=args.batch_size,
             data_root=args.data_root,
             seed=args.seed,
             flatten=not self.term.expects_image_input,
+            image_size=args.image_height,
+            image_channels=args.image_channels,
         )
         self.train_loader, self.val_loader = create_dataloader(data_config)
         self.term.model = self.term.model.to(self.device)
@@ -324,7 +385,7 @@ class ExperimentManager:
             sample_batch.detach().cpu(),
             outputs["x_hat"].detach().cpu(),
             recon_path,
-            image_size=28,
+            image_size=None,
         )
 
     def _select_sample_loader(self) -> torch.utils.data.DataLoader:

@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .configs import VQVAEConfig
 from .conv import VQConvDecoder, VQConvEncoder, flatten_spatial, unflatten_spatial
 from .quantizers import FSQQuantizer, VectorQuantizer
 
@@ -20,6 +21,7 @@ class VQVAE(nn.Module):
         embedding_dim: int = 16,
         num_embeddings: int = 128,
         beta: float = 0.25,
+        config: VQVAEConfig | None = None,
     ) -> None:
         """Initializes a VQ-VAE model.
 
@@ -27,13 +29,75 @@ class VQVAE(nn.Module):
             embedding_dim: Channel size of latent feature maps.
             num_embeddings: Number of codebook vectors.
             beta: Commitment coefficient for quantization.
+            config: Optional VQVAEConfig. If provided, it overrides architecture
+                and quantization arguments.
         """
         super().__init__()
-        self.encoder = VQConvEncoder(embedding_dim=embedding_dim)
-        self.decoder = VQConvDecoder(embedding_dim=embedding_dim)
-        self.quantizer = VectorQuantizer(
-            num_embeddings=num_embeddings, embedding_dim=embedding_dim, beta=beta
+        if config is None:
+            config = VQVAEConfig(
+                embedding_dim=embedding_dim,
+                num_embeddings=num_embeddings,
+                beta=beta,
+            )
+        self.config = config
+        self.embedding_dim = int(config.embedding_dim)
+        self.num_embeddings = int(config.num_embeddings)
+        self.beta = float(config.beta)
+
+        self.encoder = self._build_encoder(self.embedding_dim)
+        self.decoder = self._build_decoder(self.embedding_dim)
+        self.quantizer = self._build_quantizer(
+            embedding_dim=self.embedding_dim,
+            num_embeddings=self.num_embeddings,
+            beta=self.beta,
         )
+
+    def _build_encoder(self, embedding_dim: int) -> nn.Module:
+        """Builds encoder module.
+
+        Args:
+            embedding_dim: Channel size of latent feature map.
+
+        Returns:
+            Encoder module instance.
+        """
+        return VQConvEncoder(
+            embedding_dim=embedding_dim,
+            image_shape=(
+                self.config.image.channels,
+                self.config.image.height,
+                self.config.image.width,
+            ),
+            conv_channels=self.config.encoder_channels,
+        )
+
+    def _build_decoder(self, embedding_dim: int) -> nn.Module:
+        """Builds decoder module.
+
+        Args:
+            embedding_dim: Channel size of latent feature map.
+
+        Returns:
+            Decoder module instance.
+        """
+        return VQConvDecoder(
+            embedding_dim=embedding_dim,
+            output_channels=self.config.image.channels,
+            decoder_channels=self.config.decoder_channels,
+        )
+
+    def _build_quantizer(self, embedding_dim: int, num_embeddings: int, beta: float) -> nn.Module:
+        """Builds quantizer module.
+
+        Args:
+            embedding_dim: Latent embedding dimension.
+            num_embeddings: Number of codebook entries.
+            beta: Commitment coefficient.
+
+        Returns:
+            Quantizer module instance.
+        """
+        return VectorQuantizer(num_embeddings=num_embeddings, embedding_dim=embedding_dim, beta=beta)
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Runs forward pass for VQ-VAE.
@@ -87,15 +151,41 @@ class FSQVAE(VQVAE):
         embedding_dim: int = 16,
         fsq_levels: int = 8,
         beta: float = 0.25,
+        config: VQVAEConfig | None = None,
     ) -> None:
         """Initializes FSQ-VAE.
 
         Args:
-            embedding_dim: Channel size of latent fea ture maps.
+            embedding_dim: Channel size of latent feature maps.
             fsq_levels: Number of scalar bins in FSQ.
             beta: Commitment coefficient for FSQ.
+            config: Optional VQVAEConfig. If provided, it overrides architecture
+                and FSQ-specific arguments.
         """
-        nn.Module.__init__(self)
-        self.encoder = VQConvEncoder(embedding_dim=embedding_dim)
-        self.decoder = VQConvDecoder(embedding_dim=embedding_dim)
-        self.quantizer = FSQQuantizer(levels=fsq_levels, beta=beta)
+        if config is None:
+            config = VQVAEConfig(
+                embedding_dim=embedding_dim,
+                beta=beta,
+                fsq_levels=fsq_levels,
+            )
+        self.fsq_levels = int(config.fsq_levels)
+        super().__init__(
+            embedding_dim=config.embedding_dim,
+            num_embeddings=self.fsq_levels,
+            beta=config.beta,
+            config=config,
+        )
+
+    def _build_quantizer(self, embedding_dim: int, num_embeddings: int, beta: float) -> nn.Module:
+        """Builds FSQ quantizer while keeping parent initialization chain.
+
+        Args:
+            embedding_dim: Latent embedding dimension. Unused for FSQ bins.
+            num_embeddings: Placeholder to keep parent hook signature stable.
+            beta: Commitment coefficient.
+
+        Returns:
+            FSQ quantizer instance.
+        """
+        del embedding_dim, num_embeddings
+        return FSQQuantizer(levels=self.fsq_levels, beta=beta)

@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .conv import ConvDecoder, ConvGaussianEncoder
+from .configs import ConvVAEConfig, MLPVAEConfig
 from .decoders import MLPDecoder
 from .encoders import MLPGaussianEncoder
 
@@ -67,6 +68,7 @@ class VanillaVAE(BaseVAE):
         latent_dim: int,
         hidden_dims: Iterable[int] = (512, 256),
         activation: str = "relu",
+        config: MLPVAEConfig | None = None,
     ) -> None:
         """Initializes a Vanilla VAE.
 
@@ -75,8 +77,15 @@ class VanillaVAE(BaseVAE):
             latent_dim: Latent space dimension.
             hidden_dims: Shared hidden dimensions for encoder and decoder.
             activation: Activation name for hidden layers.
+            config: Optional MLPVAEConfig. If provided, it overrides architecture
+                arguments above.
         """
         super().__init__()
+        if config is not None:
+            input_dim = config.input_dim
+            latent_dim = config.latent_dim
+            hidden_dims = config.hidden_dims
+            activation = config.activation
         hidden_list = list(hidden_dims)
         self.encoder = MLPGaussianEncoder(
             input_dim=input_dim,
@@ -126,6 +135,7 @@ class BetaVAE(VanillaVAE):
         beta: float = 4.0,
         hidden_dims: Iterable[int] = (512, 256),
         activation: str = "relu",
+        config: MLPVAEConfig | None = None,
     ) -> None:
         """Initializes a Beta-VAE model.
 
@@ -135,7 +145,15 @@ class BetaVAE(VanillaVAE):
             beta: KL divergence scaling factor.
             hidden_dims: Hidden dimensions for MLP blocks.
             activation: Hidden activation name.
+            config: Optional MLPVAEConfig. If provided, it overrides architecture
+                arguments. ``beta`` still uses explicit argument.
         """
+        if config is not None:
+            input_dim = config.input_dim
+            latent_dim = config.latent_dim
+            hidden_dims = config.hidden_dims
+            activation = config.activation
+            beta = config.beta
         super().__init__(
             input_dim=input_dim,
             latent_dim=latent_dim,
@@ -162,15 +180,34 @@ class BetaVAE(VanillaVAE):
 class ConvVAE(BaseVAE):
     """Convolutional VAE variant for ``[B, 1, 28, 28]`` image inputs."""
 
-    def __init__(self, latent_dim: int = 16) -> None:
+    def __init__(
+        self,
+        latent_dim: int = 16,
+        config: ConvVAEConfig | None = None,
+    ) -> None:
         """Initializes a convolutional VAE.
 
         Args:
             latent_dim: Latent space dimension.
+            config: Optional ConvVAEConfig that controls image and structure
+                parameters.
         """
         super().__init__()
-        self.encoder = ConvGaussianEncoder(latent_dim=latent_dim)
-        self.decoder = ConvDecoder(latent_dim=latent_dim)
+        if config is None:
+            config = ConvVAEConfig(latent_dim=latent_dim)
+        self.config = config
+        self.encoder = ConvGaussianEncoder(
+            latent_dim=config.latent_dim,
+            image_shape=(config.image.channels, config.image.height, config.image.width),
+            conv_channels=config.encoder_channels,
+            bottleneck_dim=config.bottleneck_dim,
+        )
+        self.decoder = ConvDecoder(
+            latent_dim=config.latent_dim,
+            feature_shape=self.encoder.feature_shape,
+            output_channels=config.image.channels,
+            decoder_channels=tuple(reversed(config.encoder_channels[:-1])),
+        )
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encodes image input into Gaussian parameters."""

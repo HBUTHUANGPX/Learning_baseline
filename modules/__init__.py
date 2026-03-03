@@ -1,6 +1,7 @@
 """Reusable neural network modules for VAE experiments."""
 
 from .activations import ActivationFactory
+from .configs import ConvVAEConfig, ImageConfig, MLPVAEConfig, VQVAEConfig
 from .conv import ConvDecoder, ConvGaussianEncoder, VQConvDecoder, VQConvEncoder
 from .data import create_dataloader
 from .decoders import MLPDecoder
@@ -11,6 +12,10 @@ from .vqvae import FSQVAE, VQVAE
 
 __all__ = [
     "ActivationFactory",
+    "ImageConfig",
+    "MLPVAEConfig",
+    "ConvVAEConfig",
+    "VQVAEConfig",
     "ConvDecoder",
     "ConvGaussianEncoder",
     "VQConvDecoder",

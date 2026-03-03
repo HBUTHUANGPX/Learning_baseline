@@ -24,6 +24,7 @@ class RandomBinaryDataset(Dataset):
         seed: int = 42,
         as_image: bool = False,
         image_size: int = 28,
+        image_channels: int = 1,
     ) -> None:
         """Initializes the synthetic dataset.
 
@@ -33,15 +34,20 @@ class RandomBinaryDataset(Dataset):
             seed: Random seed for reproducibility.
             as_image: If True, returns ``[1, H, W]`` tensors.
             image_size: Image side length used when ``as_image=True``.
+            image_channels: Number of output image channels.
         """
         generator = torch.Generator().manual_seed(seed)
         x = torch.bernoulli(
             torch.full((num_samples, input_dim), 0.5), generator=generator
         )
         if as_image:
-            if input_dim != image_size * image_size:
-                raise ValueError("When as_image=True, input_dim must equal image_size*image_size.")
-            x = x.view(num_samples, 1, image_size, image_size)
+            expected = image_channels * image_size * image_size
+            if input_dim != expected:
+                raise ValueError(
+                    "When as_image=True, input_dim must equal "
+                    "image_channels*image_size*image_size."
+                )
+            x = x.view(num_samples, image_channels, image_size, image_size)
         self._x = x
 
     def __len__(self) -> int:
@@ -73,6 +79,7 @@ class DataConfig:
     seed: int = 42
     flatten: bool = True
     image_size: int = 28
+    image_channels: int = 1
 
 
 def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
@@ -96,6 +103,7 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
             seed=config.seed,
             as_image=not config.flatten,
             image_size=config.image_size,
+            image_channels=config.image_channels,
         )
     elif dataset_name == "mnist":
         # Lazy import keeps the code usable even if torchvision is unavailable.
