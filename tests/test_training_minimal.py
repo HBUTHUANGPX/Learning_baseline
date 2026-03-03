@@ -10,13 +10,20 @@ from torch.optim import Adam
 
 from modules.data import DataConfig, create_dataloader
 from modules.vae import VanillaVAE
-from scripts.train_vae import ExperimentManager, VAETerm, train_one_epoch, validate_one_epoch
+from scripts.train_vae import (
+    ExperimentManager,
+    VAETerm,
+    train_one_epoch,
+    validate_one_epoch,
+)
 from utils.tb_logger import create_experiment_paths
 
 
 def test_train_one_epoch_runs_and_returns_scalars() -> None:
     """Tests one-epoch training execution on synthetic data."""
-    config = DataConfig(dataset="random_binary", input_dim=32, num_samples=64, batch_size=16)
+    config = DataConfig(
+        dataset="random_binary", input_dim=32, num_samples=64, batch_size=16
+    )
     train_loader, _ = create_dataloader(config)
 
     model = VanillaVAE(input_dim=32, latent_dim=4, hidden_dims=(16, 8))

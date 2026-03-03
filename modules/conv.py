@@ -89,10 +89,16 @@ class ConvDecoder(nn.Module):
         layers = []
         c_in = in_c
         for c_out in decoder_channels:
-            layers.append(nn.ConvTranspose2d(c_in, c_out, kernel_size=4, stride=2, padding=1))
+            layers.append(
+                nn.ConvTranspose2d(c_in, c_out, kernel_size=4, stride=2, padding=1)
+            )
             layers.append(nn.ReLU(inplace=True))
             c_in = c_out
-        layers.append(nn.ConvTranspose2d(c_in, output_channels, kernel_size=4, stride=2, padding=1))
+        layers.append(
+            nn.ConvTranspose2d(
+                c_in, output_channels, kernel_size=4, stride=2, padding=1
+            )
+        )
         layers.append(nn.Sigmoid())
         self.deconv = nn.Sequential(*layers)
 
@@ -135,7 +141,9 @@ class VQConvEncoder(nn.Module):
             layers.append(nn.Conv2d(c_in, c_out, kernel_size=4, stride=2, padding=1))
             layers.append(nn.ReLU(inplace=True))
             c_in = c_out
-        layers.append(nn.Conv2d(c_in, embedding_dim, kernel_size=3, stride=1, padding=1))
+        layers.append(
+            nn.Conv2d(c_in, embedding_dim, kernel_size=3, stride=1, padding=1)
+        )
         self.net = nn.Sequential(*layers)
         with torch.no_grad():
             feature = self.net(torch.zeros(1, *image_shape))
@@ -173,7 +181,9 @@ class VQConvDecoder(nn.Module):
         if len(decoder_channels) < 2:
             raise ValueError("decoder_channels must contain at least 2 values.")
         layers = [
-            nn.Conv2d(embedding_dim, decoder_channels[0], kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(
+                embedding_dim, decoder_channels[0], kernel_size=3, stride=1, padding=1
+            ),
             nn.ReLU(inplace=True),
         ]
         for idx in range(len(decoder_channels) - 1):

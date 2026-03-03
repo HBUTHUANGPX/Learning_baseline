@@ -40,7 +40,9 @@ class BaseVAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def forward(self, x: torch.Tensor, sample: bool | None = None) -> Dict[str, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, sample: bool | None = None
+    ) -> Dict[str, torch.Tensor]:
         """Runs the full VAE forward process.
 
         Args:
@@ -108,7 +110,9 @@ class VanillaVAE(BaseVAE):
         """Decodes latent vectors into reconstructed vectors."""
         return self.decoder(z)
 
-    def loss_function(self, x: torch.Tensor, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def loss_function(
+        self, x: torch.Tensor, outputs: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
         """Computes Vanilla VAE objective.
 
         Args:
@@ -162,7 +166,9 @@ class BetaVAE(VanillaVAE):
         )
         self.beta = float(beta)
 
-    def loss_function(self, x: torch.Tensor, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def loss_function(
+        self, x: torch.Tensor, outputs: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
         """Computes Beta-VAE objective.
 
         Args:
@@ -174,7 +180,11 @@ class BetaVAE(VanillaVAE):
         """
         base = super().loss_function(x, outputs)
         total = base["recon_loss"] + self.beta * base["kl_loss"]
-        return {"loss": total, "recon_loss": base["recon_loss"], "kl_loss": base["kl_loss"]}
+        return {
+            "loss": total,
+            "recon_loss": base["recon_loss"],
+            "kl_loss": base["kl_loss"],
+        }
 
 
 class ConvVAE(BaseVAE):
@@ -198,7 +208,11 @@ class ConvVAE(BaseVAE):
         self.config = config
         self.encoder = ConvGaussianEncoder(
             latent_dim=config.latent_dim,
-            image_shape=(config.image.channels, config.image.height, config.image.width),
+            image_shape=(
+                config.image.channels,
+                config.image.height,
+                config.image.width,
+            ),
             conv_channels=config.encoder_channels,
             bottleneck_dim=config.bottleneck_dim,
         )
@@ -217,7 +231,9 @@ class ConvVAE(BaseVAE):
         """Decodes latent vectors back to images."""
         return self.decoder(z)
 
-    def loss_function(self, x: torch.Tensor, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def loss_function(
+        self, x: torch.Tensor, outputs: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
         """Computes convolutional VAE objective.
 
         Args:

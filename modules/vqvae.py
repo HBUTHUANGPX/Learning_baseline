@@ -86,7 +86,9 @@ class VQVAE(nn.Module):
             decoder_channels=self.config.decoder_channels,
         )
 
-    def _build_quantizer(self, embedding_dim: int, num_embeddings: int, beta: float) -> nn.Module:
+    def _build_quantizer(
+        self, embedding_dim: int, num_embeddings: int, beta: float
+    ) -> nn.Module:
         """Builds quantizer module.
 
         Args:
@@ -97,7 +99,9 @@ class VQVAE(nn.Module):
         Returns:
             Quantizer module instance.
         """
-        return VectorQuantizer(num_embeddings=num_embeddings, embedding_dim=embedding_dim, beta=beta)
+        return VectorQuantizer(
+            num_embeddings=num_embeddings, embedding_dim=embedding_dim, beta=beta
+        )
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Runs forward pass for VQ-VAE.
@@ -122,7 +126,9 @@ class VQVAE(nn.Module):
             "perplexity": q["perplexity"],
         }
 
-    def loss_function(self, x: torch.Tensor, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def loss_function(
+        self, x: torch.Tensor, outputs: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
         """Computes VQ-VAE loss.
 
         Args:
@@ -132,7 +138,9 @@ class VQVAE(nn.Module):
         Returns:
             Dictionary with scalar loss terms.
         """
-        recon = F.binary_cross_entropy(outputs["x_hat"], x, reduction="sum") / x.shape[0]
+        recon = (
+            F.binary_cross_entropy(outputs["x_hat"], x, reduction="sum") / x.shape[0]
+        )
         quant = outputs["quant_loss"]
         total = recon + quant
         return {
@@ -176,7 +184,9 @@ class FSQVAE(VQVAE):
             config=config,
         )
 
-    def _build_quantizer(self, embedding_dim: int, num_embeddings: int, beta: float) -> nn.Module:
+    def _build_quantizer(
+        self, embedding_dim: int, num_embeddings: int, beta: float
+    ) -> nn.Module:
         """Builds FSQ quantizer while keeping parent initialization chain.
 
         Args:

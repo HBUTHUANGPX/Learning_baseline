@@ -19,7 +19,12 @@ from modules.configs import ConvVAEConfig, ImageConfig, MLPVAEConfig, VQVAEConfi
 from modules.data import DataConfig, create_dataloader
 from modules.vae import BetaVAE, ConvVAE, VanillaVAE
 from modules.vqvae import FSQVAE, VQVAE
-from utils import TensorboardLogger, create_experiment_paths, save_reconstruction_batch, set_seed
+from utils import (
+    TensorboardLogger,
+    create_experiment_paths,
+    save_reconstruction_batch,
+    set_seed,
+)
 
 
 class ModelTerm(Protocol):
@@ -29,7 +34,9 @@ class ModelTerm(Protocol):
     metric_keys: Tuple[str, ...]
     expects_image_input: bool
 
-    def compute(self, x: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    def compute(
+        self, x: torch.Tensor
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """Runs forward and loss computation for one batch.
 
         Args:
@@ -48,7 +55,9 @@ class VAETerm:
     metric_keys: Tuple[str, ...]
     expects_image_input: bool
 
-    def compute(self, x: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    def compute(
+        self, x: torch.Tensor
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """Computes model outputs and loss dictionary.
 
         Args:
@@ -181,7 +190,12 @@ def parse_args() -> argparse.Namespace:
         default="vanilla",
         choices=["vanilla", "beta", "conv", "vq", "fsq"],
     )
-    parser.add_argument("--dataset", type=str, default="random_binary", choices=["random_binary", "mnist"])
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="random_binary",
+        choices=["random_binary", "mnist"],
+    )
     parser.add_argument("--input-dim", type=int, default=784)
     parser.add_argument("--image-channels", type=int, default=1)
     parser.add_argument("--image-height", type=int, default=28)
@@ -201,7 +215,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--deterministic", action="store_true")
-    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    parser.add_argument(
+        "--device", type=str, default="auto", choices=["auto", "cpu", "cuda"]
+    )
     parser.add_argument("--data-root", type=str, default="./data")
     parser.add_argument("--log-root", type=str, default="./log")
     return parser.parse_args()
@@ -237,7 +253,11 @@ def build_model_term(args: argparse.Namespace) -> VAETerm:
             latent_dim=mlp_cfg.latent_dim,
             config=mlp_cfg,
         )
-        return VAETerm(model=model, metric_keys=("loss", "recon_loss", "kl_loss"), expects_image_input=False)
+        return VAETerm(
+            model=model,
+            metric_keys=("loss", "recon_loss", "kl_loss"),
+            expects_image_input=False,
+        )
     if args.model == "beta":
         mlp_cfg = MLPVAEConfig(
             input_dim=args.input_dim,
@@ -252,7 +272,11 @@ def build_model_term(args: argparse.Namespace) -> VAETerm:
             beta=mlp_cfg.beta,
             config=mlp_cfg,
         )
-        return VAETerm(model=model, metric_keys=("loss", "recon_loss", "kl_loss"), expects_image_input=False)
+        return VAETerm(
+            model=model,
+            metric_keys=("loss", "recon_loss", "kl_loss"),
+            expects_image_input=False,
+        )
     if args.model == "conv":
         conv_cfg = ConvVAEConfig(
             image=image_cfg,
@@ -341,7 +365,9 @@ class ExperimentManager:
     def run(self) -> None:
         """Executes training loop for the configured number of epochs."""
         for epoch in range(1, self.args.epochs + 1):
-            train_metrics = train_one_epoch(self.term, self.train_loader, self.optimizer, self.device)
+            train_metrics = train_one_epoch(
+                self.term, self.train_loader, self.optimizer, self.device
+            )
             val_metrics = validate_one_epoch(self.term, self.val_loader, self.device)
 
             self.tb_logger.log_scalars(train_metrics, epoch, prefix="train")

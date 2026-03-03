@@ -12,7 +12,9 @@ import torch.nn.functional as F
 class VectorQuantizer(nn.Module):
     """Classic vector quantizer with trainable codebook embeddings."""
 
-    def __init__(self, num_embeddings: int, embedding_dim: int, beta: float = 0.25) -> None:
+    def __init__(
+        self, num_embeddings: int, embedding_dim: int, beta: float = 0.25
+    ) -> None:
         """Initializes vector quantizer.
 
         Args:
@@ -121,4 +123,9 @@ class FSQQuantizer(nn.Module):
             dtype=z_e.dtype,
         )
 
-        return {"z_q": z_q_st, "indices": mixed_indices, "quant_loss": loss, "perplexity": perplexity}
+        return {
+            "z_q": z_q_st,
+            "indices": mixed_indices,
+            "quant_loss": loss,
+            "perplexity": perplexity,
+        }

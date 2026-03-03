@@ -22,7 +22,9 @@ class ExperimentPaths:
     reconstructions_dir: Path
 
 
-def create_experiment_paths(log_root: str = "./log", timestamp: str | None = None) -> ExperimentPaths:
+def create_experiment_paths(
+    log_root: str = "./log", timestamp: str | None = None
+) -> ExperimentPaths:
     """Creates experiment directories using timestamp-based run IDs.
 
     Args:
@@ -73,7 +75,9 @@ class TensorboardLogger:
         for key, value in scalars.items():
             self.writer.add_scalar(f"{prefix}/{key}", value, step)
 
-    def log_reconstruction(self, x: torch.Tensor, x_hat: torch.Tensor, step: int) -> None:
+    def log_reconstruction(
+        self, x: torch.Tensor, x_hat: torch.Tensor, step: int
+    ) -> None:
         """Logs reconstruction tensors to TensorBoard.
 
         Args:

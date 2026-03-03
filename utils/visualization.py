@@ -45,15 +45,23 @@ def save_reconstruction_batch(
         size = int(math.sqrt(int(original.shape[1])))
         image_size = size if size * size == int(original.shape[1]) else None
 
-    if image_size is not None and original.ndim == 2 and original.shape[1] == image_size * image_size:
+    if (
+        image_size is not None
+        and original.ndim == 2
+        and original.shape[1] == image_size * image_size
+    ):
         try:
             from torchvision.utils import save_image
 
             # Alternate original and reconstruction for quick visual inspection.
-            stacked = torch.cat([original, recon], dim=0).view(-1, 1, image_size, image_size)
+            stacked = torch.cat([original, recon], dim=0).view(
+                -1, 1, image_size, image_size
+            )
             save_image(stacked, str(output_path), nrow=num_items)
             return
         except Exception:
             pass
 
-    torch.save({"original": original, "reconstruction": recon}, output_path.with_suffix(".pt"))
+    torch.save(
+        {"original": original, "reconstruction": recon}, output_path.with_suffix(".pt")
+    )
