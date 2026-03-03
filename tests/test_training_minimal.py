@@ -80,6 +80,8 @@ def test_empty_validation_loader_is_handled(tmp_path: Path) -> None:
         num_samples=8,
         lr=1e-3,
         seed=42,
+        deterministic=False,
+        device="cpu",
         data_root=str(tmp_path / "data"),
         log_root=str(tmp_path / "log"),
     )

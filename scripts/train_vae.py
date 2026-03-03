@@ -106,20 +106,22 @@ def train_one_epoch(
     """
     term.model.train()
     agg = _init_agg(term.metric_keys)
-    num_batches = 0
+    num_samples = 0
 
     for batch in loader:
         x = _extract_inputs(batch).to(device)
+        batch_size = int(x.shape[0])
         optimizer.zero_grad()
         _, losses = term.compute(x)
         losses["loss"].backward()
         optimizer.step()
 
-        num_batches += 1
+        num_samples += batch_size
         for key in term.metric_keys:
-            agg[key] += float(losses[key].detach().cpu())
+            # Losses are per-sample averages; convert back to sample-weighted sum.
+            agg[key] += float(losses[key].detach().cpu()) * batch_size
 
-    return {key: value / max(num_batches, 1) for key, value in agg.items()}
+    return {key: value / max(num_samples, 1) for key, value in agg.items()}
 
 
 @torch.no_grad()
@@ -140,16 +142,17 @@ def validate_one_epoch(
     """
     term.model.eval()
     agg = _init_agg(term.metric_keys)
-    num_batches = 0
+    num_samples = 0
 
     for batch in loader:
         x = _extract_inputs(batch).to(device)
+        batch_size = int(x.shape[0])
         _, losses = term.compute(x)
-        num_batches += 1
+        num_samples += batch_size
         for key in term.metric_keys:
-            agg[key] += float(losses[key].detach().cpu())
+            agg[key] += float(losses[key].detach().cpu()) * batch_size
 
-    return {key: value / max(num_batches, 1) for key, value in agg.items()}
+    return {key: value / max(num_samples, 1) for key, value in agg.items()}
 
 
 def parse_args() -> argparse.Namespace:
@@ -178,6 +181,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-samples", type=int, default=1024)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--data-root", type=str, default="./data")
     parser.add_argument("--log-root", type=str, default="./log")
     return parser.parse_args()
@@ -247,7 +252,14 @@ class ExperimentManager:
             args: Parsed command-line arguments.
         """
         self.args = args
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if args.device == "cpu":
+            self.device = torch.device("cpu")
+        elif args.device == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA device requested but not available.")
+            self.device = torch.device("cuda")
+        else:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.paths = create_experiment_paths(log_root=args.log_root)
         self.tb_logger = TensorboardLogger(self.paths.tensorboard_dir)
         self.term = build_model_term(args)
@@ -334,7 +346,7 @@ class ExperimentManager:
 def main() -> None:
     """Entrypoint for VAE training."""
     args = parse_args()
-    set_seed(args.seed)
+    set_seed(args.seed, deterministic=args.deterministic)
     manager = ExperimentManager(args)
     manager.run()
 

@@ -34,6 +34,12 @@ python scripts/train_vae.py --model vq --dataset random_binary --latent-dim 16 -
 python scripts/train_vae.py --model fsq --dataset random_binary --latent-dim 16 --fsq-levels 8 --epochs 2
 ```
 
+For stronger reproducibility across runs:
+
+```bash
+python scripts/train_vae.py --model fsq --dataset mnist --epochs 200 --deterministic --device cpu
+```
+
 ## TensorBoard
 
 After training starts, event files are written to:

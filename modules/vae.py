@@ -39,17 +39,21 @@ class BaseVAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor, sample: bool | None = None) -> Dict[str, torch.Tensor]:
         """Runs the full VAE forward process.
 
         Args:
             x: Input tensor with shape ``[batch, input_dim]``.
+            sample: Whether to sample latent vectors with reparameterization.
+                If ``None``, sampling follows module mode (train: sample,
+                eval: deterministic ``z=mu``).
 
         Returns:
             A dictionary containing reconstruction and latent statistics.
         """
         mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
+        should_sample = self.training if sample is None else sample
+        z = self.reparameterize(mu, logvar) if should_sample else mu
         x_hat = self.decode(z)
         return {"x_hat": x_hat, "mu": mu, "logvar": logvar, "z": z}
 
