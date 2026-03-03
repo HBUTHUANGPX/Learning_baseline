@@ -1,11 +1,12 @@
-"""Training script for VAE-family models."""
+"""Training script for VAE-family models with manager-style orchestration."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable, Protocol, Tuple
 
 import torch
 from torch.optim import Adam
@@ -20,67 +21,102 @@ from modules.vqvae import FSQVAE, VQVAE
 from utils import TensorboardLogger, create_experiment_paths, save_reconstruction_batch, set_seed
 
 
-def _init_metric_container(model_name: str) -> Dict[str, float]:
-    """Initializes metric accumulator based on model family.
+class ModelTerm(Protocol):
+    """Interface that adapts concrete models to a unified training API."""
 
-    Args:
-        model_name: Model type name.
+    model: torch.nn.Module
+    metric_keys: Tuple[str, ...]
+    expects_image_input: bool
 
-    Returns:
-        Dictionary with zero-initialized metrics.
-    """
-    if model_name in {"vq", "fsq"}:
-        return {"loss": 0.0, "recon_loss": 0.0, "quant_loss": 0.0, "perplexity": 0.0}
-    return {"loss": 0.0, "recon_loss": 0.0, "kl_loss": 0.0}
+    def compute(self, x: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+        """Runs forward and loss computation for one batch.
+
+        Args:
+            x: Input tensor batch.
+
+        Returns:
+            Tuple of ``(outputs, losses)`` dictionaries.
+        """
+
+
+@dataclass
+class VAETerm:
+    """Default term adapter for VAE-like models with ``loss_function`` method."""
+
+    model: torch.nn.Module
+    metric_keys: Tuple[str, ...]
+    expects_image_input: bool
+
+    def compute(self, x: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+        """Computes model outputs and loss dictionary.
+
+        Args:
+            x: Input tensor batch.
+
+        Returns:
+            Forward outputs and loss terms.
+        """
+        outputs = self.model(x)
+        losses = self.model.loss_function(x, outputs)
+        return outputs, losses
 
 
 def _extract_inputs(batch: torch.Tensor | tuple) -> torch.Tensor:
-    """Extracts input tensors from dataloader batches.
+    """Extracts input tensor from dataloader output.
 
     Args:
-        batch: Dataloader output, either tensor or ``(input, label)`` tuple.
+        batch: Tensor batch or tuple/list batch (e.g., ``(x, y)``).
 
     Returns:
-        Input tensor suitable for model forward pass.
+        Input tensor only.
     """
     if isinstance(batch, (tuple, list)):
         return batch[0]
     return batch
 
 
+def _init_agg(metric_keys: Iterable[str]) -> Dict[str, float]:
+    """Creates zero-valued aggregator for metric keys.
+
+    Args:
+        metric_keys: Metric names to aggregate.
+
+    Returns:
+        Mapping from metric name to zero value.
+    """
+    return {key: 0.0 for key in metric_keys}
+
+
 def train_one_epoch(
-    model: torch.nn.Module,
+    term: ModelTerm,
     loader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    model_name: str,
 ) -> Dict[str, float]:
-    """Runs one training epoch.
+    """Runs one training epoch with a model term adapter.
 
     Args:
-        model: VAE-like model with ``forward`` and ``loss_function``.
+        term: ModelTerm adapter.
         loader: Training dataloader.
         optimizer: Torch optimizer.
         device: Computation device.
-        model_name: Model family identifier.
 
     Returns:
-        Mean scalar losses over the epoch.
+        Mean scalar metrics over the epoch.
     """
-    model.train()
-    agg = _init_metric_container(model_name)
+    term.model.train()
+    agg = _init_agg(term.metric_keys)
     num_batches = 0
 
     for batch in loader:
         x = _extract_inputs(batch).to(device)
         optimizer.zero_grad()
-        outputs = model(x)
-        losses = model.loss_function(x, outputs)
+        _, losses = term.compute(x)
         losses["loss"].backward()
         optimizer.step()
 
         num_batches += 1
-        for key in agg:
+        for key in term.metric_keys:
             agg[key] += float(losses[key].detach().cpu())
 
     return {key: value / max(num_batches, 1) for key, value in agg.items()}
@@ -88,40 +124,36 @@ def train_one_epoch(
 
 @torch.no_grad()
 def validate_one_epoch(
-    model: torch.nn.Module,
+    term: ModelTerm,
     loader: torch.utils.data.DataLoader,
     device: torch.device,
-    model_name: str,
 ) -> Dict[str, float]:
-    """Runs one validation epoch.
+    """Runs one validation epoch with a model term adapter.
 
     Args:
-        model: VAE-like model.
+        term: ModelTerm adapter.
         loader: Validation dataloader.
         device: Computation device.
-        model_name: Model family identifier.
 
     Returns:
-        Mean scalar losses over the epoch.
+        Mean scalar metrics over the epoch.
     """
-    model.eval()
-    agg = _init_metric_container(model_name)
+    term.model.eval()
+    agg = _init_agg(term.metric_keys)
     num_batches = 0
 
     for batch in loader:
         x = _extract_inputs(batch).to(device)
-        outputs = model(x)
-        losses = model.loss_function(x, outputs)
-
+        _, losses = term.compute(x)
         num_batches += 1
-        for key in agg:
+        for key in term.metric_keys:
             agg[key] += float(losses[key].detach().cpu())
 
     return {key: value / max(num_batches, 1) for key, value in agg.items()}
 
 
 def parse_args() -> argparse.Namespace:
-    """Parses CLI arguments for VAE training.
+    """Parses CLI arguments for training.
 
     Returns:
         Parsed argparse namespace.
@@ -151,109 +183,160 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_model(args: argparse.Namespace) -> torch.nn.Module:
-    """Builds model instance from CLI arguments.
+def build_model_term(args: argparse.Namespace) -> VAETerm:
+    """Builds a term adapter that encapsulates model and metrics contract.
 
     Args:
         args: Parsed command-line arguments.
 
     Returns:
-        Instantiated VAE model.
+        Configured VAETerm instance.
     """
     hidden_dims = [int(x.strip()) for x in args.hidden_dims.split(",") if x.strip()]
     if args.model == "vanilla":
-        return VanillaVAE(
+        model = VanillaVAE(
             input_dim=args.input_dim,
             latent_dim=args.latent_dim,
             hidden_dims=hidden_dims,
             activation=args.activation,
         )
+        return VAETerm(model=model, metric_keys=("loss", "recon_loss", "kl_loss"), expects_image_input=False)
     if args.model == "beta":
-        return BetaVAE(
+        model = BetaVAE(
             input_dim=args.input_dim,
             latent_dim=args.latent_dim,
             beta=args.beta,
             hidden_dims=hidden_dims,
             activation=args.activation,
         )
+        return VAETerm(model=model, metric_keys=("loss", "recon_loss", "kl_loss"), expects_image_input=False)
     if args.model == "conv":
-        return ConvVAE(latent_dim=args.latent_dim)
-    if args.model == "vq":
-        return VQVAE(
-            embedding_dim=args.latent_dim,
-            num_embeddings=args.num_embeddings,
-            beta=args.beta,
+        return VAETerm(
+            model=ConvVAE(latent_dim=args.latent_dim),
+            metric_keys=("loss", "recon_loss", "kl_loss"),
+            expects_image_input=True,
         )
-    return FSQVAE(
-        embedding_dim=args.latent_dim,
-        fsq_levels=args.fsq_levels,
-        beta=args.beta,
+    if args.model == "vq":
+        return VAETerm(
+            model=VQVAE(
+                embedding_dim=args.latent_dim,
+                num_embeddings=args.num_embeddings,
+                beta=args.beta,
+            ),
+            metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
+            expects_image_input=True,
+        )
+    return VAETerm(
+        model=FSQVAE(
+            embedding_dim=args.latent_dim,
+            fsq_levels=args.fsq_levels,
+            beta=args.beta,
+        ),
+        metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
+        expects_image_input=True,
     )
+
+
+class ExperimentManager:
+    """Manager-style trainer coordinating data, model term, logging, and checkpoints."""
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        """Initializes manager state from CLI arguments.
+
+        Args:
+            args: Parsed command-line arguments.
+        """
+        self.args = args
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.paths = create_experiment_paths(log_root=args.log_root)
+        self.tb_logger = TensorboardLogger(self.paths.tensorboard_dir)
+        self.term = build_model_term(args)
+
+        data_config = DataConfig(
+            dataset=args.dataset,
+            input_dim=args.input_dim,
+            num_samples=args.num_samples,
+            batch_size=args.batch_size,
+            data_root=args.data_root,
+            seed=args.seed,
+            flatten=not self.term.expects_image_input,
+        )
+        self.train_loader, self.val_loader = create_dataloader(data_config)
+        self.term.model = self.term.model.to(self.device)
+        self.optimizer = Adam(self.term.model.parameters(), lr=args.lr)
+
+    def run(self) -> None:
+        """Executes training loop for the configured number of epochs."""
+        for epoch in range(1, self.args.epochs + 1):
+            train_metrics = train_one_epoch(self.term, self.train_loader, self.optimizer, self.device)
+            val_metrics = validate_one_epoch(self.term, self.val_loader, self.device)
+
+            self.tb_logger.log_scalars(train_metrics, epoch, prefix="train")
+            self.tb_logger.log_scalars(val_metrics, epoch, prefix="val")
+            self._save_epoch_artifacts(epoch)
+
+            print(
+                f"[Epoch {epoch}] "
+                f"train_loss={train_metrics['loss']:.4f} "
+                f"val_loss={val_metrics['loss']:.4f}"
+            )
+
+        self.tb_logger.close()
+        print(f"Training finished. Logs saved in: {self.paths.run_dir}")
+
+    @torch.no_grad()
+    def _save_epoch_artifacts(self, epoch: int) -> None:
+        """Saves checkpoint and reconstruction artifact for one epoch.
+
+        Args:
+            epoch: Current epoch index (1-based).
+        """
+        sample_loader = self._select_sample_loader()
+        sample_batch = _extract_inputs(next(iter(sample_loader))).to(self.device)
+        outputs, _ = self.term.compute(sample_batch)
+        self.tb_logger.log_reconstruction(sample_batch, outputs["x_hat"], epoch)
+
+        ckpt_path = self.paths.checkpoint_dir / f"epoch_{epoch:03d}.pt"
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state": self.term.model.state_dict(),
+                "optimizer_state": self.optimizer.state_dict(),
+                "args": vars(self.args),
+            },
+            ckpt_path,
+        )
+
+        recon_path = self.paths.reconstructions_dir / f"epoch_{epoch:03d}.png"
+        save_reconstruction_batch(
+            sample_batch.detach().cpu(),
+            outputs["x_hat"].detach().cpu(),
+            recon_path,
+            image_size=28,
+        )
+
+    def _select_sample_loader(self) -> torch.utils.data.DataLoader:
+        """Selects a non-empty loader for visualization sampling.
+
+        Returns:
+            A non-empty dataloader, preferring validation loader.
+
+        Raises:
+            RuntimeError: If both validation and training dataloaders are empty.
+        """
+        if len(self.val_loader) > 0:
+            return self.val_loader
+        if len(self.train_loader) > 0:
+            return self.train_loader
+        raise RuntimeError("Both validation and training dataloaders are empty.")
 
 
 def main() -> None:
     """Entrypoint for VAE training."""
     args = parse_args()
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    paths = create_experiment_paths(log_root=args.log_root)
-    tb_logger = TensorboardLogger(paths.tensorboard_dir)
-    image_model = args.model in {"conv", "vq", "fsq"}
-
-    data_config = DataConfig(
-        dataset=args.dataset,
-        input_dim=args.input_dim,
-        num_samples=args.num_samples,
-        batch_size=args.batch_size,
-        data_root=args.data_root,
-        seed=args.seed,
-        flatten=not image_model,
-    )
-    train_loader, val_loader = create_dataloader(data_config)
-
-    model = build_model(args).to(device)
-    optimizer = Adam(model.parameters(), lr=args.lr)
-
-    for epoch in range(1, args.epochs + 1):
-        train_metrics = train_one_epoch(model, train_loader, optimizer, device, args.model)
-        val_metrics = validate_one_epoch(model, val_loader, device, args.model)
-
-        tb_logger.log_scalars(train_metrics, epoch, prefix="train")
-        tb_logger.log_scalars(val_metrics, epoch, prefix="val")
-
-        sample_batch = _extract_inputs(next(iter(val_loader))).to(device)
-        sample_outputs = model(sample_batch)
-        tb_logger.log_reconstruction(sample_batch, sample_outputs["x_hat"], epoch)
-
-        ckpt_path = paths.checkpoint_dir / f"epoch_{epoch:03d}.pt"
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state": model.state_dict(),
-                "optimizer_state": optimizer.state_dict(),
-                "args": vars(args),
-            },
-            ckpt_path,
-        )
-
-        recon_path = paths.reconstructions_dir / f"epoch_{epoch:03d}.png"
-        save_reconstruction_batch(
-            sample_batch.detach().cpu(),
-            sample_outputs["x_hat"].detach().cpu(),
-            recon_path,
-            image_size=28,
-        )
-
-        print(
-            f"[Epoch {epoch}] "
-            f"train_loss={train_metrics['loss']:.4f} "
-            f"val_loss={val_metrics['loss']:.4f} "
-            f"ckpt={ckpt_path.name}"
-        )
-
-    tb_logger.close()
-    print(f"Training finished. Logs saved in: {paths.run_dir}")
+    manager = ExperimentManager(args)
+    manager.run()
 
 
 if __name__ == "__main__":

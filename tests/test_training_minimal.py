@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import torch
@@ -9,7 +10,7 @@ from torch.optim import Adam
 
 from modules.data import DataConfig, create_dataloader
 from modules.vae import VanillaVAE
-from scripts.train_vae import train_one_epoch
+from scripts.train_vae import ExperimentManager, VAETerm, train_one_epoch, validate_one_epoch
 from utils.tb_logger import create_experiment_paths
 
 
@@ -19,14 +20,13 @@ def test_train_one_epoch_runs_and_returns_scalars() -> None:
     train_loader, _ = create_dataloader(config)
 
     model = VanillaVAE(input_dim=32, latent_dim=4, hidden_dims=(16, 8))
-    optimizer = Adam(model.parameters(), lr=1e-3)
-    metrics = train_one_epoch(
-        model,
-        train_loader,
-        optimizer,
-        device=torch.device("cpu"),
-        model_name="vanilla",
+    term = VAETerm(
+        model=model,
+        metric_keys=("loss", "recon_loss", "kl_loss"),
+        expects_image_input=False,
     )
+    optimizer = Adam(model.parameters(), lr=1e-3)
+    metrics = train_one_epoch(term, train_loader, optimizer, device=torch.device("cpu"))
 
     assert "loss" in metrics and "recon_loss" in metrics and "kl_loss" in metrics
     assert metrics["loss"] > 0
@@ -40,3 +40,51 @@ def test_create_experiment_paths_creates_expected_directories(tmp_path: Path) ->
     assert paths.tensorboard_dir.exists()
     assert paths.checkpoint_dir.exists()
     assert paths.reconstructions_dir.exists()
+
+
+def test_empty_validation_loader_is_handled(tmp_path: Path) -> None:
+    """Tests empty validation boundary with manager fallback and validation API."""
+    config = DataConfig(
+        dataset="random_binary",
+        input_dim=32,
+        num_samples=8,
+        batch_size=4,
+        val_ratio=0.0,
+    )
+    train_loader, val_loader = create_dataloader(config)
+    assert len(val_loader) == 0
+    assert len(train_loader) > 0
+
+    model = VanillaVAE(input_dim=32, latent_dim=4, hidden_dims=(16, 8))
+    term = VAETerm(
+        model=model,
+        metric_keys=("loss", "recon_loss", "kl_loss"),
+        expects_image_input=False,
+    )
+    val_metrics = validate_one_epoch(term, val_loader, device=torch.device("cpu"))
+    assert set(val_metrics.keys()) == {"loss", "recon_loss", "kl_loss"}
+    assert val_metrics["loss"] == 0.0
+
+    args = argparse.Namespace(
+        model="vanilla",
+        dataset="random_binary",
+        input_dim=32,
+        latent_dim=4,
+        hidden_dims="16,8",
+        activation="relu",
+        beta=4.0,
+        num_embeddings=32,
+        fsq_levels=6,
+        epochs=1,
+        batch_size=4,
+        num_samples=8,
+        lr=1e-3,
+        seed=42,
+        data_root=str(tmp_path / "data"),
+        log_root=str(tmp_path / "log"),
+    )
+    manager = ExperimentManager(args)
+    manager.train_loader = train_loader
+    manager.val_loader = val_loader
+    manager._save_epoch_artifacts(epoch=1)
+    manager.tb_logger.close()
