@@ -8,6 +8,9 @@ This repository provides a modular Variational Autoencoder (VAE) baseline with:
 - `VQVAE`
 - `FSQVAE`
 
+It also includes a protocol-based batch/observation pipeline for future
+sequence and generative algorithm extensions.
+
 ## Directory Layout
 
 - `./data`: datasets
@@ -25,6 +28,17 @@ This repository provides a modular Variational Autoencoder (VAE) baseline with:
 ```bash
 python scripts/train_vae.py --model vanilla --dataset random_binary --epochs 2
 ```
+
+Batch protocol with sequence dataset (pipeline demo):
+
+```bash
+python -m pytest -q tests/test_batch_protocol_sequence.py
+```
+
+Note:
+
+- Current VAE models are image/vector oriented and are not yet sequence-model architectures.
+- Sequence data pipeline is now available and ready for future diffusion/flow-matching integration.
 
 Image models (`conv`, `vq`, `fsq`) example:
 

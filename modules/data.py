@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, List, MutableMapping, Tuple
 
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
+
+from .observations import (
+    ObsGroupCfg,
+    ObsTermCfg,
+    ObservationManager,
+    ObservationsCfg,
+)
 
 
 class RandomBinaryDataset(Dataset):
@@ -66,6 +73,119 @@ class RandomBinaryDataset(Dataset):
         return self._x[index].float()
 
 
+class RandomSequenceDataset(Dataset):
+    """Synthetic sequence dataset for future motion/time-series experiments.
+
+    Samples are variable-length (optional) trajectories in ``R^feature_dim``.
+    """
+
+    def __init__(
+        self,
+        num_samples: int,
+        sequence_length: int,
+        feature_dim: int,
+        variable_length: bool = True,
+        min_sequence_length: int = 8,
+        seed: int = 42,
+    ) -> None:
+        """Initializes synthetic sequence dataset.
+
+        Args:
+            num_samples: Number of sequence samples.
+            sequence_length: Maximum sequence length.
+            feature_dim: Feature dimension per timestep.
+            variable_length: Whether each sample has random length.
+            min_sequence_length: Lower bound for random lengths.
+            seed: Random seed for reproducible synthesis.
+        """
+        self.num_samples = num_samples
+        self.sequence_length = sequence_length
+        self.feature_dim = feature_dim
+        self.variable_length = variable_length
+        self.min_sequence_length = min_sequence_length
+        self._generator = torch.Generator().manual_seed(seed)
+
+    def __len__(self) -> int:
+        """Returns dataset size."""
+        return self.num_samples
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        """Builds one synthetic sequence sample.
+
+        Args:
+            index: Sample index (unused, kept for Dataset protocol).
+
+        Returns:
+            Dictionary with sequence tensor and sequence length.
+        """
+        del index
+        if self.variable_length:
+            length = int(
+                torch.randint(
+                    low=self.min_sequence_length,
+                    high=self.sequence_length + 1,
+                    size=(1,),
+                    generator=self._generator,
+                ).item()
+            )
+        else:
+            length = self.sequence_length
+
+        # Generate smooth periodic motion-like signals with random phase.
+        t = torch.linspace(0.0, 1.0, steps=length)
+        frequencies = (
+            torch.rand((self.feature_dim,), generator=self._generator) * 3.0 + 0.5
+        )
+        phases = (
+            torch.rand((self.feature_dim,), generator=self._generator) * 2.0 * torch.pi
+        )
+        sequence = torch.sin(
+            t[:, None] * frequencies[None, :] * 2.0 * torch.pi + phases[None, :]
+        )
+        noise = (
+            torch.randn((length, self.feature_dim), generator=self._generator) * 0.01
+        )
+        sequence = (sequence + noise).float()
+
+        return {"sequence": sequence, "length": torch.tensor(length, dtype=torch.long)}
+
+
+class DictWrapperDataset(Dataset):
+    """Wraps arbitrary datasets into dictionary-based sample outputs."""
+
+    def __init__(self, base: Dataset, input_key: str = "state") -> None:
+        """Initializes wrapper.
+
+        Args:
+            base: Wrapped dataset.
+            input_key: Key assigned to main input tensor.
+        """
+        self.base = base
+        self.input_key = input_key
+
+    def __len__(self) -> int:
+        """Returns wrapped dataset size."""
+        return len(self.base)
+
+    def __getitem__(self, index: int) -> MutableMapping[str, object]:
+        """Converts base sample into dictionary sample.
+
+        Args:
+            index: Sample index.
+
+        Returns:
+            Dictionary with standardized keys.
+        """
+        item = self.base[index]
+        if isinstance(item, dict):
+            return item
+        if isinstance(item, (tuple, list)):
+            if len(item) == 2:
+                return {self.input_key: item[0], "label": item[1]}
+            return {self.input_key: item[0]}
+        return {self.input_key: item}
+
+
 @dataclass
 class DataConfig:
     """Configuration for dataloader construction."""
@@ -80,6 +200,12 @@ class DataConfig:
     flatten: bool = True
     image_size: int = 28
     image_channels: int = 1
+    sequence_length: int = 32
+    sequence_feature_dim: int = 16
+    sequence_variable_length: bool = True
+    sequence_min_length: int = 8
+    use_batch_protocol: bool = True
+    observations: ObservationsCfg | None = None
 
 
 def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
@@ -105,6 +231,7 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
             image_size=config.image_size,
             image_channels=config.image_channels,
         )
+        full_dataset = DictWrapperDataset(full_dataset, input_key="state")
     elif dataset_name == "mnist":
         # Lazy import keeps the code usable even if torchvision is unavailable.
         from torchvision import datasets, transforms
@@ -117,6 +244,16 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         full_dataset = datasets.MNIST(
             root=config.data_root, train=True, download=True, transform=transform
         )
+        full_dataset = DictWrapperDataset(full_dataset, input_key="image")
+    elif dataset_name == "random_sequence":
+        full_dataset = RandomSequenceDataset(
+            num_samples=config.num_samples,
+            sequence_length=config.sequence_length,
+            feature_dim=config.sequence_feature_dim,
+            variable_length=config.sequence_variable_length,
+            min_sequence_length=config.sequence_min_length,
+            seed=config.seed,
+        )
     else:
         raise ValueError(f"Unsupported dataset '{config.dataset}'.")
 
@@ -128,10 +265,80 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         generator=torch.Generator().manual_seed(config.seed),
     )
 
+    collate_fn = _build_collate_fn(config)
     train_loader = DataLoader(
-        train_set, batch_size=config.batch_size, shuffle=True, drop_last=False
+        train_set,
+        batch_size=config.batch_size,
+        shuffle=True,
+        drop_last=False,
+        collate_fn=collate_fn,
     )
     val_loader = DataLoader(
-        val_set, batch_size=config.batch_size, shuffle=False, drop_last=False
+        val_set,
+        batch_size=config.batch_size,
+        shuffle=False,
+        drop_last=False,
+        collate_fn=collate_fn,
     )
     return train_loader, val_loader
+
+
+def _build_collate_fn(config: DataConfig):
+    """Builds collate function according to batch protocol config.
+
+    Args:
+        config: Dataloader configuration.
+
+    Returns:
+        Collate callable accepted by ``DataLoader``.
+    """
+    if not config.use_batch_protocol:
+        return None
+
+    obs_cfg = config.observations or _default_observations_cfg(config)
+    manager = ObservationManager(obs_cfg)
+
+    def _collate(samples: List[MutableMapping[str, object]]) -> Dict[str, object]:
+        """Collates raw dictionary samples into protocol-compliant batch.
+
+        Args:
+            samples: Raw dataset samples.
+
+        Returns:
+            Batch dictionary with observation groups and metadata.
+        """
+        return manager.build_batch(samples)
+
+    return _collate
+
+
+def _default_observations_cfg(config: DataConfig) -> ObservationsCfg:
+    """Creates default observation configuration by dataset type.
+
+    Args:
+        config: Data configuration.
+
+    Returns:
+        Default observation config.
+    """
+    dataset_name = config.dataset.lower().strip()
+    if dataset_name == "random_sequence":
+        policy = ObsGroupCfg(
+            name="policy",
+            terms=(ObsTermCfg(name="sequence", source_key="sequence"),),
+            concatenate_terms=False,
+        )
+    elif dataset_name == "mnist":
+        policy = ObsGroupCfg(
+            name="policy",
+            terms=(ObsTermCfg(name="image", source_key="image"),),
+            concatenate_terms=False,
+        )
+    else:
+        key = "state"
+        policy = ObsGroupCfg(
+            name="policy",
+            terms=(ObsTermCfg(name=key, source_key=key),),
+            concatenate_terms=False,
+        )
+    return ObservationsCfg(groups=(policy,), primary_group="policy")

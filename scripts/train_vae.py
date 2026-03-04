@@ -71,15 +71,27 @@ class VAETerm:
         return outputs, losses
 
 
-def _extract_inputs(batch: torch.Tensor | tuple) -> torch.Tensor:
+def _extract_inputs(batch: torch.Tensor | tuple | dict) -> torch.Tensor:
     """Extracts input tensor from dataloader output.
 
     Args:
-        batch: Tensor batch or tuple/list batch (e.g., ``(x, y)``).
+        batch: Tensor batch, tuple/list batch, or protocol batch dictionary.
 
     Returns:
         Input tensor only.
     """
+    if isinstance(batch, dict):
+        if "obs" in batch and isinstance(batch["obs"], dict):
+            obs = batch["obs"]
+            if "policy" in obs:
+                return obs["policy"]
+            return next(iter(obs.values()))
+        if "x" in batch:
+            return batch["x"]
+        for value in batch.values():
+            if isinstance(value, torch.Tensor):
+                return value
+        raise ValueError("Unsupported batch dictionary format.")
     if isinstance(batch, (tuple, list)):
         return batch[0]
     return batch
@@ -194,7 +206,7 @@ def parse_args() -> argparse.Namespace:
         "--dataset",
         type=str,
         default="random_binary",
-        choices=["random_binary", "mnist"],
+        choices=["random_binary", "mnist", "random_sequence"],
     )
     parser.add_argument("--input-dim", type=int, default=784)
     parser.add_argument("--image-channels", type=int, default=1)
@@ -212,6 +224,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-samples", type=int, default=1024)
+    parser.add_argument("--sequence-length", type=int, default=32)
+    parser.add_argument("--sequence-feature-dim", type=int, default=16)
+    parser.add_argument("--sequence-variable-length", action="store_true")
+    parser.add_argument("--sequence-min-length", type=int, default=8)
+    parser.add_argument("--no-batch-protocol", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--deterministic", action="store_true")
@@ -357,6 +374,11 @@ class ExperimentManager:
             flatten=not self.term.expects_image_input,
             image_size=args.image_height,
             image_channels=args.image_channels,
+            sequence_length=args.sequence_length,
+            sequence_feature_dim=args.sequence_feature_dim,
+            sequence_variable_length=args.sequence_variable_length,
+            sequence_min_length=args.sequence_min_length,
+            use_batch_protocol=not args.no_batch_protocol,
         )
         self.train_loader, self.val_loader = create_dataloader(data_config)
         self.term.model = self.term.model.to(self.device)
