@@ -1,0 +1,8 @@
+motion_group:
+  xsens_bvh:
+    file_name: [ 
+      "data/g1/mimic_kit/g1_walk.npz"
+    ]
+    folder_name: ["data/g1/xsens_bvh"]
+    wo_file_name: []
+    wo_folder_name: []
