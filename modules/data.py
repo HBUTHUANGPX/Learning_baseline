@@ -15,6 +15,7 @@ from .observations import (
     ObservationManager,
     ObservationsCfg,
 )
+from .registry import Registry
 
 
 class RandomBinaryDataset(Dataset):
@@ -208,6 +209,9 @@ class DataConfig:
     observations: ObservationsCfg | None = None
 
 
+DATASET_REGISTRY: Registry = Registry("dataset")
+
+
 def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
     """Creates train and validation dataloaders.
 
@@ -220,42 +224,8 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
     Raises:
         ValueError: If dataset type is unsupported.
     """
-    dataset_name = config.dataset.lower().strip()
-
-    if dataset_name == "random_binary":
-        full_dataset = RandomBinaryDataset(
-            num_samples=config.num_samples,
-            input_dim=config.input_dim,
-            seed=config.seed,
-            as_image=not config.flatten,
-            image_size=config.image_size,
-            image_channels=config.image_channels,
-        )
-        full_dataset = DictWrapperDataset(full_dataset, input_key="state")
-    elif dataset_name == "mnist":
-        # Lazy import keeps the code usable even if torchvision is unavailable.
-        from torchvision import datasets, transforms
-
-        Path(config.data_root).mkdir(parents=True, exist_ok=True)
-        transform_list = [transforms.ToTensor()]
-        if config.flatten:
-            transform_list.append(transforms.Lambda(lambda x: x.view(-1)))
-        transform = transforms.Compose(transform_list)
-        full_dataset = datasets.MNIST(
-            root=config.data_root, train=True, download=True, transform=transform
-        )
-        full_dataset = DictWrapperDataset(full_dataset, input_key="image")
-    elif dataset_name == "random_sequence":
-        full_dataset = RandomSequenceDataset(
-            num_samples=config.num_samples,
-            sequence_length=config.sequence_length,
-            feature_dim=config.sequence_feature_dim,
-            variable_length=config.sequence_variable_length,
-            min_sequence_length=config.sequence_min_length,
-            seed=config.seed,
-        )
-    else:
-        raise ValueError(f"Unsupported dataset '{config.dataset}'.")
+    dataset_builder = DATASET_REGISTRY.get(config.dataset)
+    full_dataset = dataset_builder(config)
 
     val_size = int(len(full_dataset) * config.val_ratio)
     train_size = len(full_dataset) - val_size
@@ -281,6 +251,50 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         collate_fn=collate_fn,
     )
     return train_loader, val_loader
+
+
+@DATASET_REGISTRY.register("random_binary")
+def build_random_binary_dataset(config: DataConfig) -> Dataset:
+    """Builds random binary dataset from config."""
+    dataset = RandomBinaryDataset(
+        num_samples=config.num_samples,
+        input_dim=config.input_dim,
+        seed=config.seed,
+        as_image=not config.flatten,
+        image_size=config.image_size,
+        image_channels=config.image_channels,
+    )
+    return DictWrapperDataset(dataset, input_key="state")
+
+
+@DATASET_REGISTRY.register("mnist")
+def build_mnist_dataset(config: DataConfig) -> Dataset:
+    """Builds MNIST dataset from config."""
+    # Lazy import keeps the code usable even if torchvision is unavailable.
+    from torchvision import datasets, transforms
+
+    Path(config.data_root).mkdir(parents=True, exist_ok=True)
+    transform_list = [transforms.ToTensor()]
+    if config.flatten:
+        transform_list.append(transforms.Lambda(lambda x: x.view(-1)))
+    transform = transforms.Compose(transform_list)
+    dataset = datasets.MNIST(
+        root=config.data_root, train=True, download=True, transform=transform
+    )
+    return DictWrapperDataset(dataset, input_key="image")
+
+
+@DATASET_REGISTRY.register("random_sequence")
+def build_random_sequence_dataset(config: DataConfig) -> Dataset:
+    """Builds random variable-length sequence dataset from config."""
+    return RandomSequenceDataset(
+        num_samples=config.num_samples,
+        sequence_length=config.sequence_length,
+        feature_dim=config.sequence_feature_dim,
+        variable_length=config.sequence_variable_length,
+        min_sequence_length=config.sequence_min_length,
+        seed=config.seed,
+    )
 
 
 def _build_collate_fn(config: DataConfig):

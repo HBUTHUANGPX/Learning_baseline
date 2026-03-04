@@ -73,6 +73,7 @@ def test_empty_validation_loader_is_handled(tmp_path: Path) -> None:
     assert val_metrics["loss"] == 0.0
 
     args = argparse.Namespace(
+        algorithm="vae",
         model="vanilla",
         dataset="random_binary",
         input_dim=32,

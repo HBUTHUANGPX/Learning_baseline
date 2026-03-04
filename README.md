@@ -29,6 +29,29 @@ sequence and generative algorithm extensions.
 python scripts/train_vae.py --model vanilla --dataset random_binary --epochs 2
 ```
 
+Hydra layered config entrypoint:
+
+```bash
+python scripts/train_hydra.py
+```
+
+Hydra composition and override examples:
+
+```bash
+python scripts/train_hydra.py model=fsq data=mnist train.epochs=200
+python scripts/train_hydra.py model=conv data=mnist optim.lr=5e-4 train.device=cpu
+python scripts/train_hydra.py data=random_sequence data.sequence_length=128 data.sequence_feature_dim=32
+```
+
+Config layout:
+
+- `configs/data/*.yaml`
+- `configs/model/*.yaml`
+- `configs/algo/*.yaml`
+- `configs/optim/*.yaml`
+- `configs/train/*.yaml`
+- `configs/log/*.yaml`
+
 Batch protocol with sequence dataset (pipeline demo):
 
 ```bash

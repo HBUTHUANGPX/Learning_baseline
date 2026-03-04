@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Protocol, Tuple
+from typing import Dict, Iterable
 
 import torch
 from torch.optim import Adam
@@ -15,10 +14,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from modules.configs import ConvVAEConfig, ImageConfig, MLPVAEConfig, VQVAEConfig
+from modules.algorithms import (
+    AlgorithmTerm,
+    VAEAlgorithmTerm,
+    build_algorithm_term,
+)
 from modules.data import DataConfig, create_dataloader
-from modules.vae import BetaVAE, ConvVAE, VanillaVAE
-from modules.vqvae import FSQVAE, VQVAE
 from utils import (
     TensorboardLogger,
     create_experiment_paths,
@@ -26,75 +27,8 @@ from utils import (
     set_seed,
 )
 
-
-class ModelTerm(Protocol):
-    """Interface that adapts concrete models to a unified training API."""
-
-    model: torch.nn.Module
-    metric_keys: Tuple[str, ...]
-    expects_image_input: bool
-
-    def compute(
-        self, x: torch.Tensor
-    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
-        """Runs forward and loss computation for one batch.
-
-        Args:
-            x: Input tensor batch.
-
-        Returns:
-            Tuple of ``(outputs, losses)`` dictionaries.
-        """
-
-
-@dataclass
-class VAETerm:
-    """Default term adapter for VAE-like models with ``loss_function`` method."""
-
-    model: torch.nn.Module
-    metric_keys: Tuple[str, ...]
-    expects_image_input: bool
-
-    def compute(
-        self, x: torch.Tensor
-    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
-        """Computes model outputs and loss dictionary.
-
-        Args:
-            x: Input tensor batch.
-
-        Returns:
-            Forward outputs and loss terms.
-        """
-        outputs = self.model(x)
-        losses = self.model.loss_function(x, outputs)
-        return outputs, losses
-
-
-def _extract_inputs(batch: torch.Tensor | tuple | dict) -> torch.Tensor:
-    """Extracts input tensor from dataloader output.
-
-    Args:
-        batch: Tensor batch, tuple/list batch, or protocol batch dictionary.
-
-    Returns:
-        Input tensor only.
-    """
-    if isinstance(batch, dict):
-        if "obs" in batch and isinstance(batch["obs"], dict):
-            obs = batch["obs"]
-            if "policy" in obs:
-                return obs["policy"]
-            return next(iter(obs.values()))
-        if "x" in batch:
-            return batch["x"]
-        for value in batch.values():
-            if isinstance(value, torch.Tensor):
-                return value
-        raise ValueError("Unsupported batch dictionary format.")
-    if isinstance(batch, (tuple, list)):
-        return batch[0]
-    return batch
+# Backward-compatible alias for existing tests/scripts.
+VAETerm = VAEAlgorithmTerm
 
 
 def _init_agg(metric_keys: Iterable[str]) -> Dict[str, float]:
@@ -109,20 +43,8 @@ def _init_agg(metric_keys: Iterable[str]) -> Dict[str, float]:
     return {key: 0.0 for key in metric_keys}
 
 
-def _parse_int_tuple(raw: str) -> Tuple[int, ...]:
-    """Parses comma-separated integer text into tuple.
-
-    Args:
-        raw: String like ``"32,64"``.
-
-    Returns:
-        Parsed integer tuple.
-    """
-    return tuple(int(x.strip()) for x in raw.split(",") if x.strip())
-
-
 def train_one_epoch(
-    term: ModelTerm,
+    term: AlgorithmTerm,
     loader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
@@ -130,7 +52,7 @@ def train_one_epoch(
     """Runs one training epoch with a model term adapter.
 
     Args:
-        term: ModelTerm adapter.
+        term: AlgorithmTerm adapter.
         loader: Training dataloader.
         optimizer: Torch optimizer.
         device: Computation device.
@@ -143,10 +65,9 @@ def train_one_epoch(
     num_samples = 0
 
     for batch in loader:
-        x = _extract_inputs(batch).to(device)
+        x, _, losses = term.compute(batch, device=device)
         batch_size = int(x.shape[0])
         optimizer.zero_grad()
-        _, losses = term.compute(x)
         losses["loss"].backward()
         optimizer.step()
 
@@ -160,14 +81,14 @@ def train_one_epoch(
 
 @torch.no_grad()
 def validate_one_epoch(
-    term: ModelTerm,
+    term: AlgorithmTerm,
     loader: torch.utils.data.DataLoader,
     device: torch.device,
 ) -> Dict[str, float]:
     """Runs one validation epoch with a model term adapter.
 
     Args:
-        term: ModelTerm adapter.
+        term: AlgorithmTerm adapter.
         loader: Validation dataloader.
         device: Computation device.
 
@@ -179,9 +100,8 @@ def validate_one_epoch(
     num_samples = 0
 
     for batch in loader:
-        x = _extract_inputs(batch).to(device)
+        x, _, losses = term.compute(batch, device=device)
         batch_size = int(x.shape[0])
-        _, losses = term.compute(x)
         num_samples += batch_size
         for key in term.metric_keys:
             agg[key] += float(losses[key].detach().cpu()) * batch_size
@@ -202,6 +122,7 @@ def parse_args() -> argparse.Namespace:
         default="vanilla",
         choices=["vanilla", "beta", "conv", "vq", "fsq"],
     )
+    parser.add_argument("--algorithm", type=str, default="vae", choices=["vae"])
     parser.add_argument(
         "--dataset",
         type=str,
@@ -240,103 +161,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_model_term(args: argparse.Namespace) -> VAETerm:
-    """Builds a term adapter that encapsulates model and metrics contract.
-
-    Args:
-        args: Parsed command-line arguments.
-
-    Returns:
-        Configured VAETerm instance.
-    """
-    image_cfg = ImageConfig(
-        channels=args.image_channels,
-        height=args.image_height,
-        width=args.image_width,
-    )
-    hidden_dims = _parse_int_tuple(args.hidden_dims)
-    conv_channels = _parse_int_tuple(args.conv_channels)
-    vq_decoder_channels = _parse_int_tuple(args.vq_decoder_channels)
-    if args.model == "vanilla":
-        mlp_cfg = MLPVAEConfig(
-            input_dim=args.input_dim,
-            latent_dim=args.latent_dim,
-            hidden_dims=hidden_dims,
-            activation=args.activation,
-            beta=args.beta,
-        )
-        model = VanillaVAE(
-            input_dim=mlp_cfg.input_dim,
-            latent_dim=mlp_cfg.latent_dim,
-            config=mlp_cfg,
-        )
-        return VAETerm(
-            model=model,
-            metric_keys=("loss", "recon_loss", "kl_loss"),
-            expects_image_input=False,
-        )
-    if args.model == "beta":
-        mlp_cfg = MLPVAEConfig(
-            input_dim=args.input_dim,
-            latent_dim=args.latent_dim,
-            hidden_dims=hidden_dims,
-            activation=args.activation,
-            beta=args.beta,
-        )
-        model = BetaVAE(
-            input_dim=mlp_cfg.input_dim,
-            latent_dim=mlp_cfg.latent_dim,
-            beta=mlp_cfg.beta,
-            config=mlp_cfg,
-        )
-        return VAETerm(
-            model=model,
-            metric_keys=("loss", "recon_loss", "kl_loss"),
-            expects_image_input=False,
-        )
-    if args.model == "conv":
-        conv_cfg = ConvVAEConfig(
-            image=image_cfg,
-            latent_dim=args.latent_dim,
-            encoder_channels=conv_channels,
-            bottleneck_dim=args.conv_bottleneck_dim,
-        )
-        return VAETerm(
-            model=ConvVAE(config=conv_cfg),
-            metric_keys=("loss", "recon_loss", "kl_loss"),
-            expects_image_input=True,
-        )
-    if args.model == "vq":
-        vq_cfg = VQVAEConfig(
-            image=image_cfg,
-            embedding_dim=args.latent_dim,
-            encoder_channels=conv_channels,
-            decoder_channels=vq_decoder_channels,
-            num_embeddings=args.num_embeddings,
-            beta=args.beta,
-            fsq_levels=args.fsq_levels,
-        )
-        return VAETerm(
-            model=VQVAE(config=vq_cfg),
-            metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
-            expects_image_input=True,
-        )
-    vq_cfg = VQVAEConfig(
-        image=image_cfg,
-        embedding_dim=args.latent_dim,
-        encoder_channels=conv_channels,
-        decoder_channels=vq_decoder_channels,
-        num_embeddings=args.num_embeddings,
-        beta=args.beta,
-        fsq_levels=args.fsq_levels,
-    )
-    return VAETerm(
-        model=FSQVAE(config=vq_cfg),
-        metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
-        expects_image_input=True,
-    )
-
-
 class ExperimentManager:
     """Manager-style trainer coordinating data, model term, logging, and checkpoints."""
 
@@ -357,7 +181,7 @@ class ExperimentManager:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.paths = create_experiment_paths(log_root=args.log_root)
         self.tb_logger = TensorboardLogger(self.paths.tensorboard_dir)
-        self.term = build_model_term(args)
+        self.term = build_algorithm_term(args)
         effective_input_dim = (
             args.image_channels * args.image_height * args.image_width
             if self.term.expects_image_input
@@ -413,9 +237,9 @@ class ExperimentManager:
             epoch: Current epoch index (1-based).
         """
         sample_loader = self._select_sample_loader()
-        sample_batch = _extract_inputs(next(iter(sample_loader))).to(self.device)
-        outputs, _ = self.term.compute(sample_batch)
-        self.tb_logger.log_reconstruction(sample_batch, outputs["x_hat"], epoch)
+        raw_batch = next(iter(sample_loader))
+        x, outputs, _ = self.term.compute(raw_batch, device=self.device)
+        self.tb_logger.log_reconstruction(x, outputs["x_hat"], epoch)
 
         ckpt_path = self.paths.checkpoint_dir / f"epoch_{epoch:03d}.pt"
         torch.save(
@@ -430,7 +254,7 @@ class ExperimentManager:
 
         recon_path = self.paths.reconstructions_dir / f"epoch_{epoch:03d}.png"
         save_reconstruction_batch(
-            sample_batch.detach().cpu(),
+            x.detach().cpu(),
             outputs["x_hat"].detach().cpu(),
             recon_path,
             image_size=None,

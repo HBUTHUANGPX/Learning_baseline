@@ -1,0 +1,15 @@
+defaults:
+  - data: random_binary
+  - model: vanilla
+  - algo: vae
+  - optim: adam
+  - train: default
+  - log: default
+  - _self_
+
+hydra:
+  run:
+    dir: ./log/${now:%Y%m%d_%H%M%S}
+  output_subdir: null
+  job:
+    chdir: false
