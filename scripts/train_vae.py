@@ -180,7 +180,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--motion-file-yaml", type=str, default="")
     parser.add_argument("--motion-group", type=str, default="")
     parser.add_argument(
-        "--motion-feature-keys", type=str, default="joint_pos,joint_vel"
+        "--motion-feature-keys", type=str, default="joint_pos,body_pos_w,body_quat_w"
     )
     parser.add_argument("--motion-as-sequence", action="store_true")
     parser.add_argument("--motion-frame-stride", type=int, default=1)
@@ -251,6 +251,7 @@ class ExperimentManager:
         self.train_loader, self.val_loader = create_dataloader(data_config)
         self._validate_model_data_compatibility()
         self.term.model = self.term.model.to(self.device)
+        print(self.term.model)
         self.optimizer = Adam(self.term.model.parameters(), lr=args.lr)
 
     @staticmethod

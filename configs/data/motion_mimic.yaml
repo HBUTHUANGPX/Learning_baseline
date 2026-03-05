@@ -1,6 +1,6 @@
 name: motion_mimic
 num_samples: 0
-batch_size: 32
+batch_size: 8192
 val_ratio: 0.2
 data_root: ./data
 seed: 42
@@ -15,7 +15,7 @@ sequence_feature_dim: 16
 sequence_variable_length: false
 sequence_min_length: 8
 motion_files: []
-motion_feature_keys: [joint_pos, joint_vel]
+motion_feature_keys: [joint_pos,body_pos_w,body_quat_w]
 motion_as_sequence: false
 motion_frame_stride: 1
 motion_normalize: false
