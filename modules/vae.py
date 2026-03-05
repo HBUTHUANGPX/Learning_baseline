@@ -93,7 +93,7 @@ class BaseVAE(nn.Module):
 
 
 class VanillaVAE(BaseVAE):
-    """Standard VAE with MLP encoder/decoder and BCE reconstruction loss."""
+    """Standard VAE with MLP encoder/decoder and adaptive reconstruction loss."""
 
     def __init__(
         self,
@@ -121,6 +121,7 @@ class VanillaVAE(BaseVAE):
             latent_dim = config.latent_dim
             hidden_dims = config.hidden_dims
             activation = config.activation
+            recon_loss_mode = config.recon_loss_mode
         hidden_list = list(hidden_dims)
         self.encoder = MLPGaussianEncoder(
             input_dim=input_dim,
@@ -173,6 +174,7 @@ class BetaVAE(VanillaVAE):
         beta: float = 4.0,
         hidden_dims: Iterable[int] = (512, 256),
         activation: str = "relu",
+        recon_loss_mode: str = "auto",
         config: MLPVAEConfig | None = None,
     ) -> None:
         """Initializes a Beta-VAE model.
@@ -183,6 +185,7 @@ class BetaVAE(VanillaVAE):
             beta: KL divergence scaling factor.
             hidden_dims: Hidden dimensions for MLP blocks.
             activation: Hidden activation name.
+            recon_loss_mode: Reconstruction loss mode in ``{"auto","bce","mse"}``.
             config: Optional MLPVAEConfig. If provided, it overrides architecture
                 arguments. ``beta`` still uses explicit argument.
         """
@@ -192,11 +195,13 @@ class BetaVAE(VanillaVAE):
             hidden_dims = config.hidden_dims
             activation = config.activation
             beta = config.beta
+            recon_loss_mode = config.recon_loss_mode
         super().__init__(
             input_dim=input_dim,
             latent_dim=latent_dim,
             hidden_dims=hidden_dims,
             activation=activation,
+            recon_loss_mode=recon_loss_mode,
         )
         self.beta = float(beta)
 
@@ -234,12 +239,15 @@ class ConvVAE(BaseVAE):
 
         Args:
             latent_dim: Latent space dimension.
+            recon_loss_mode: Reconstruction loss mode in ``{"auto","bce","mse"}``.
             config: Optional ConvVAEConfig that controls image and structure
                 parameters.
         """
         super().__init__()
         if config is None:
-            config = ConvVAEConfig(latent_dim=latent_dim)
+            config = ConvVAEConfig(
+                latent_dim=latent_dim, recon_loss_mode=recon_loss_mode
+            )
         self.config = config
         self.encoder = ConvGaussianEncoder(
             latent_dim=config.latent_dim,
@@ -257,7 +265,7 @@ class ConvVAE(BaseVAE):
             output_channels=config.image.channels,
             decoder_channels=tuple(reversed(config.encoder_channels[:-1])),
         )
-        self.recon_loss_mode = recon_loss_mode
+        self.recon_loss_mode = config.recon_loss_mode
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encodes image input into Gaussian parameters."""

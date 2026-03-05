@@ -77,7 +77,9 @@ def resolve_motion_files(
         for _, group_files in motion_file_group.items():
             files.extend(list(group_files))
     if not files:
-        raise ValueError("No motion files provided. Set motion_files or motion_file_group.")
+        raise ValueError(
+            "No motion files provided. Set motion_files or motion_file_group."
+        )
 
     paths = [Path(file).expanduser().resolve() for file in files]
     missing = [str(path) for path in paths if not path.is_file()]
@@ -180,7 +182,9 @@ class MotionMimicDataset(Dataset):
             all_frames = torch.cat(self.sequences, dim=0)
             self.mean = all_frames.mean(dim=0, keepdim=True)
             self.std = all_frames.std(dim=0, keepdim=True).clamp_min(1e-6)
-            self.sequences = [(sequence - self.mean) / self.std for sequence in self.sequences]
+            self.sequences = [
+                (sequence - self.mean) / self.std for sequence in self.sequences
+            ]
 
     def __len__(self) -> int:
         """Returns dataset size under active sampling mode."""

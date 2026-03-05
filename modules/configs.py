@@ -30,6 +30,7 @@ class MLPVAEConfig:
     hidden_dims: Tuple[int, ...] = (256, 128)
     activation: str = "relu"
     beta: float = 4.0
+    recon_loss_mode: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class ConvVAEConfig:
     latent_dim: int = 16
     encoder_channels: Tuple[int, ...] = (32, 64)
     bottleneck_dim: int = 256
+    recon_loss_mode: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -53,3 +55,4 @@ class VQVAEConfig:
     num_embeddings: int = 128
     beta: float = 0.25
     fsq_levels: int = 8
+    recon_loss_mode: str = "auto"

@@ -158,6 +158,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--conv-bottleneck-dim", type=int, default=256)
     parser.add_argument("--vq-decoder-channels", type=str, default="64,32")
     parser.add_argument("--activation", type=str, default="relu")
+    parser.add_argument(
+        "--recon-loss-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "bce", "mse"],
+    )
     parser.add_argument("--beta", type=float, default=4.0)
     parser.add_argument("--num-embeddings", type=int, default=128)
     parser.add_argument("--fsq-levels", type=int, default=8)
@@ -171,7 +177,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--motion-files", type=str, default="")
     parser.add_argument("--motion-file-yaml", type=str, default="")
     parser.add_argument("--motion-group", type=str, default="")
-    parser.add_argument("--motion-feature-keys", type=str, default="joint_pos,joint_vel")
+    parser.add_argument(
+        "--motion-feature-keys", type=str, default="joint_pos,joint_vel"
+    )
     parser.add_argument("--motion-as-sequence", action="store_true")
     parser.add_argument("--motion-frame-stride", type=int, default=1)
     parser.add_argument("--motion-normalize", action="store_true")

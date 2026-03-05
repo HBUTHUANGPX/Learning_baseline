@@ -33,7 +33,7 @@ def test_motion_yaml_is_used_by_motion_mimic_builder(tmp_path: Path) -> None:
                 "motion_group:",
                 "  test_group:",
                 "    file_name:",
-                f"      - \"{str(file_a)}\"",
+                f'      - "{str(file_a)}"',
                 "    folder_name: []",
                 "    wo_file_name: []",
                 "    wo_folder_name: []",

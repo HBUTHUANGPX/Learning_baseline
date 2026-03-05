@@ -24,6 +24,7 @@ def _build_args() -> argparse.Namespace:
         conv_bottleneck_dim=256,
         vq_decoder_channels="64,32",
         activation="relu",
+        recon_loss_mode="auto",
         beta=4.0,
         num_embeddings=32,
         fsq_levels=6,

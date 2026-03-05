@@ -86,6 +86,7 @@ def test_empty_validation_loader_is_handled(tmp_path: Path) -> None:
         conv_bottleneck_dim=256,
         vq_decoder_channels="64,32",
         activation="relu",
+        recon_loss_mode="auto",
         beta=4.0,
         num_embeddings=32,
         fsq_levels=6,

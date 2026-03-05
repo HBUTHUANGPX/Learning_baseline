@@ -51,6 +51,7 @@ def _cfg_to_namespace(cfg: DictConfig) -> SimpleNamespace:
         conv_bottleneck_dim=int(cfg.model.conv_bottleneck_dim),
         vq_decoder_channels=_to_csv(cfg.model.vq_decoder_channels),
         activation=str(cfg.model.activation),
+        recon_loss_mode=str(cfg.model.recon_loss_mode),
         beta=float(cfg.model.beta),
         num_embeddings=int(cfg.model.num_embeddings),
         fsq_levels=int(cfg.model.fsq_levels),
@@ -92,10 +93,11 @@ def _main_impl(cfg: DictConfig) -> None:
 
 
 if hydra is not None:
-    main = hydra.main(version_base=None, config_path="../configs", config_name="config")(
-        _main_impl
-    )
+    main = hydra.main(
+        version_base=None, config_path="../configs", config_name="config"
+    )(_main_impl)
 else:
+
     def main() -> None:
         """Fallback entrypoint when hydra-core is not installed."""
         raise ModuleNotFoundError(

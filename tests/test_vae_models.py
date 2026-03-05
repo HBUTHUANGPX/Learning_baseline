@@ -28,3 +28,14 @@ def test_beta_vae_loss_contains_required_keys() -> None:
 
     assert set(losses.keys()) == {"loss", "recon_loss", "kl_loss"}
     assert losses["loss"].dim() == 0
+
+
+def test_vanilla_vae_auto_recon_loss_handles_continuous_targets() -> None:
+    """Tests auto recon loss falls back from BCE for non-[0,1] continuous inputs."""
+    model = VanillaVAE(input_dim=16, latent_dim=4, hidden_dims=(8, 4))
+    # Motion-like continuous values that violate BCE target range.
+    x = torch.randn(7, 16) * 3.0
+    outputs = model(x)
+    losses = model.loss_function(x, outputs)
+    assert torch.isfinite(losses["recon_loss"]).item()
+    assert torch.isfinite(losses["loss"]).item()

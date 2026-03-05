@@ -11,7 +11,9 @@ from modules.data import DataConfig, create_dataloader
 from scripts.train_vae import ExperimentManager
 
 
-def _write_motion_npz(path: Path, length: int = 12, joints: int = 6, bodies: int = 4) -> None:
+def _write_motion_npz(
+    path: Path, length: int = 12, joints: int = 6, bodies: int = 4
+) -> None:
     """Writes one synthetic motion NPZ for testing.
 
     Args:
@@ -120,6 +122,7 @@ def test_motion_mimic_auto_infers_input_dim_for_mlp(tmp_path: Path) -> None:
         conv_bottleneck_dim=256,
         vq_decoder_channels="64,32",
         activation="relu",
+        recon_loss_mode="auto",
         beta=4.0,
         num_embeddings=32,
         fsq_levels=6,

@@ -146,8 +146,14 @@ def build_vanilla_model(args: argparse.Namespace) -> ModelSpec:
         hidden_dims=_parse_int_tuple(args.hidden_dims),
         activation=args.activation,
         beta=args.beta,
+        recon_loss_mode=args.recon_loss_mode,
     )
-    model = VanillaVAE(input_dim=cfg.input_dim, latent_dim=cfg.latent_dim, config=cfg)
+    model = VanillaVAE(
+        input_dim=cfg.input_dim,
+        latent_dim=cfg.latent_dim,
+        recon_loss_mode=cfg.recon_loss_mode,
+        config=cfg,
+    )
     return ModelSpec(
         model=model,
         metric_keys=("loss", "recon_loss", "kl_loss"),
@@ -164,11 +170,13 @@ def build_beta_model(args: argparse.Namespace) -> ModelSpec:
         hidden_dims=_parse_int_tuple(args.hidden_dims),
         activation=args.activation,
         beta=args.beta,
+        recon_loss_mode=args.recon_loss_mode,
     )
     model = BetaVAE(
         input_dim=cfg.input_dim,
         latent_dim=cfg.latent_dim,
         beta=cfg.beta,
+        recon_loss_mode=cfg.recon_loss_mode,
         config=cfg,
     )
     return ModelSpec(
@@ -186,9 +194,10 @@ def build_conv_model(args: argparse.Namespace) -> ModelSpec:
         latent_dim=args.latent_dim,
         encoder_channels=_parse_int_tuple(args.conv_channels),
         bottleneck_dim=args.conv_bottleneck_dim,
+        recon_loss_mode=args.recon_loss_mode,
     )
     return ModelSpec(
-        model=ConvVAE(config=cfg),
+        model=ConvVAE(recon_loss_mode=cfg.recon_loss_mode, config=cfg),
         metric_keys=("loss", "recon_loss", "kl_loss"),
         expects_image_input=True,
     )
@@ -205,9 +214,10 @@ def build_vq_model(args: argparse.Namespace) -> ModelSpec:
         num_embeddings=args.num_embeddings,
         beta=args.beta,
         fsq_levels=args.fsq_levels,
+        recon_loss_mode=args.recon_loss_mode,
     )
     return ModelSpec(
-        model=VQVAE(config=cfg),
+        model=VQVAE(recon_loss_mode=cfg.recon_loss_mode, config=cfg),
         metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
         expects_image_input=True,
     )
@@ -224,9 +234,10 @@ def build_fsq_model(args: argparse.Namespace) -> ModelSpec:
         num_embeddings=args.num_embeddings,
         beta=args.beta,
         fsq_levels=args.fsq_levels,
+        recon_loss_mode=args.recon_loss_mode,
     )
     return ModelSpec(
-        model=FSQVAE(config=cfg),
+        model=FSQVAE(recon_loss_mode=cfg.recon_loss_mode, config=cfg),
         metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
         expects_image_input=True,
     )

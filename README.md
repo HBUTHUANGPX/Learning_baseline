@@ -71,6 +71,18 @@ python scripts/train_vae.py --model vq --dataset random_binary --latent-dim 16 -
 python scripts/train_vae.py --model fsq --dataset random_binary --latent-dim 16 --fsq-levels 8 --epochs 2
 ```
 
+Reconstruction loss mode:
+
+- `--recon-loss-mode auto` (default): use BCE for `[0,1]` targets, otherwise MSE.
+- `--recon-loss-mode bce`: force BCE (for normalized Bernoulli-style data).
+- `--recon-loss-mode mse`: force MSE (recommended for continuous motion features).
+
+Example for motion-like continuous data:
+
+```bash
+python scripts/train_hydra.py data=motion_mimic data.motion_group=xsens_bvh model=vanilla model.recon_loss_mode=mse
+```
+
 For stronger reproducibility across runs:
 
 ```bash

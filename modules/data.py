@@ -24,7 +24,7 @@ class RandomBinaryDataset(Dataset):
     """Simple synthetic dataset for quick VAE debugging and testing.
 
     Each sample is a binary vector generated from Bernoulli(0.5), which is
-    compatible with common BCE-based VAE reconstruction losses.
+    compatible with auto/BCE reconstruction settings in VAE losses.
     """
 
     def __init__(
@@ -236,7 +236,10 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
     dataset_builder = DATASET_REGISTRY.get(config.dataset)
     full_dataset = dataset_builder(config)
 
-    if isinstance(full_dataset, MotionMimicDataset) and not full_dataset.config.as_sequence:
+    if (
+        isinstance(full_dataset, MotionMimicDataset)
+        and not full_dataset.config.as_sequence
+    ):
         train_set, val_set = _split_motion_frame_subsets(full_dataset, config)
     else:
         val_size = int(len(full_dataset) * config.val_ratio)
