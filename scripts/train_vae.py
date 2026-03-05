@@ -20,6 +20,11 @@ from modules.algorithms import (
     build_algorithm_term,
 )
 from modules.data import DataConfig, create_dataloader
+from modules.motion_load import (
+    load_motion_feature_sequence,
+    resolve_motion_files,
+)
+from utils.load_motion_file import collect_npz_paths
 from utils import (
     TensorboardLogger,
     create_experiment_paths,
@@ -41,6 +46,20 @@ def _init_agg(metric_keys: Iterable[str]) -> Dict[str, float]:
         Mapping from metric name to zero value.
     """
     return {key: 0.0 for key in metric_keys}
+
+
+def _to_tuple(value: str | Iterable[str]) -> tuple[str, ...]:
+    """Normalizes comma-separated string or iterable into string tuple.
+
+    Args:
+        value: Input value from CLI args/namespace.
+
+    Returns:
+        Cleaned tuple of non-empty strings.
+    """
+    if isinstance(value, str):
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+    return tuple(str(item).strip() for item in value if str(item).strip())
 
 
 def train_one_epoch(
@@ -127,7 +146,7 @@ def parse_args() -> argparse.Namespace:
         "--dataset",
         type=str,
         default="random_binary",
-        choices=["random_binary", "mnist", "random_sequence"],
+        choices=["random_binary", "mnist", "random_sequence", "motion_mimic"],
     )
     parser.add_argument("--input-dim", type=int, default=784)
     parser.add_argument("--image-channels", type=int, default=1)
@@ -149,6 +168,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sequence-feature-dim", type=int, default=16)
     parser.add_argument("--sequence-variable-length", action="store_true")
     parser.add_argument("--sequence-min-length", type=int, default=8)
+    parser.add_argument("--motion-files", type=str, default="")
+    parser.add_argument("--motion-file-yaml", type=str, default="")
+    parser.add_argument("--motion-group", type=str, default="")
+    parser.add_argument("--motion-feature-keys", type=str, default="joint_pos,joint_vel")
+    parser.add_argument("--motion-as-sequence", action="store_true")
+    parser.add_argument("--motion-frame-stride", type=int, default=1)
+    parser.add_argument("--motion-normalize", action="store_true")
     parser.add_argument("--no-batch-protocol", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
@@ -181,6 +207,7 @@ class ExperimentManager:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.paths = create_experiment_paths(log_root=args.log_root)
         self.tb_logger = TensorboardLogger(self.paths.tensorboard_dir)
+        self._adapt_motion_model_input_dim(args)
         self.term = build_algorithm_term(args)
         effective_input_dim = (
             args.image_channels * args.image_height * args.image_width
@@ -202,11 +229,66 @@ class ExperimentManager:
             sequence_feature_dim=args.sequence_feature_dim,
             sequence_variable_length=args.sequence_variable_length,
             sequence_min_length=args.sequence_min_length,
+            motion_files=_to_tuple(args.motion_files),
+            motion_file_yaml=args.motion_file_yaml,
+            motion_group=args.motion_group,
+            motion_feature_keys=_to_tuple(args.motion_feature_keys),
+            motion_as_sequence=args.motion_as_sequence,
+            motion_frame_stride=args.motion_frame_stride,
+            motion_normalize=args.motion_normalize,
             use_batch_protocol=not args.no_batch_protocol,
         )
         self.train_loader, self.val_loader = create_dataloader(data_config)
         self.term.model = self.term.model.to(self.device)
         self.optimizer = Adam(self.term.model.parameters(), lr=args.lr)
+
+    @staticmethod
+    def _adapt_motion_model_input_dim(args: argparse.Namespace) -> None:
+        """Adapts model input dimensions for motion_mimic dataset.
+
+        For frame-wise training with MLP VAE models, input dimension is inferred
+        from actual motion features to avoid manual mismatch configuration.
+
+        Args:
+            args: Parsed argument namespace (mutated in-place).
+        """
+        if args.dataset != "motion_mimic":
+            return
+        if args.model in {"vanilla", "beta"} and args.motion_as_sequence:
+            raise ValueError(
+                "motion_mimic with motion_as_sequence=true returns [B, T, D] batches, "
+                "which are incompatible with current MLP VAE models. "
+                "Use data.motion_as_sequence=false, or switch to a sequence-capable algorithm."
+            )
+        if args.model not in {"vanilla", "beta"}:
+            return
+
+        motion_files = _to_tuple(args.motion_files)
+        if not motion_files:
+            if not args.motion_file_yaml:
+                raise ValueError(
+                    "motion_mimic requires motion_files or motion_file_yaml to infer input_dim."
+                )
+            grouped = collect_npz_paths(args.motion_file_yaml)
+            if args.motion_group:
+                if args.motion_group not in grouped:
+                    raise KeyError(
+                        f"Motion group '{args.motion_group}' not found in {args.motion_file_yaml}. "
+                        f"Available: {list(grouped.keys())}"
+                    )
+                motion_files = tuple(grouped[args.motion_group])
+            else:
+                merged = []
+                for files in grouped.values():
+                    merged.extend(files)
+                motion_files = tuple(merged)
+        paths = resolve_motion_files(motion_files=motion_files, motion_file_group=None)
+        first_feature = load_motion_feature_sequence(
+            path=paths[0],
+            feature_keys=_to_tuple(args.motion_feature_keys),
+            frame_stride=args.motion_frame_stride,
+        )
+        args.input_dim = int(first_feature.shape[-1])
 
     def run(self) -> None:
         """Executes training loop for the configured number of epochs."""

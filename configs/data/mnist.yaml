@@ -14,3 +14,10 @@ sequence_length: 32
 sequence_feature_dim: 16
 sequence_variable_length: false
 sequence_min_length: 8
+motion_files: []
+motion_feature_keys: [joint_pos, joint_vel]
+motion_as_sequence: true
+motion_frame_stride: 1
+motion_normalize: false
+motion_file_yaml: ""
+motion_group: ""

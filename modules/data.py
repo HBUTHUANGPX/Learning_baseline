@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Dict, List, MutableMapping, Tuple
 
 import torch
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, Subset, random_split
+from utils.load_motion_file import collect_npz_paths
 
 from .observations import (
     ObsGroupCfg,
@@ -15,6 +16,7 @@ from .observations import (
     ObservationManager,
     ObservationsCfg,
 )
+from .motion_load import MotionDatasetConfig, MotionMimicDataset
 from .registry import Registry
 
 
@@ -205,6 +207,13 @@ class DataConfig:
     sequence_feature_dim: int = 16
     sequence_variable_length: bool = True
     sequence_min_length: int = 8
+    motion_files: tuple[str, ...] = ()
+    motion_file_yaml: str = ""
+    motion_group: str = ""
+    motion_feature_keys: tuple[str, ...] = ("joint_pos", "joint_vel")
+    motion_as_sequence: bool = True
+    motion_frame_stride: int = 1
+    motion_normalize: bool = False
     use_batch_protocol: bool = True
     observations: ObservationsCfg | None = None
 
@@ -229,11 +238,18 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
 
     val_size = int(len(full_dataset) * config.val_ratio)
     train_size = len(full_dataset) - val_size
-    train_set, val_set = random_split(
-        full_dataset,
-        lengths=[train_size, val_size],
-        generator=torch.Generator().manual_seed(config.seed),
-    )
+    if val_size == 0:
+        train_set = full_dataset
+        val_set = Subset(full_dataset, [])
+    elif train_size == 0:
+        train_set = Subset(full_dataset, [])
+        val_set = full_dataset
+    else:
+        train_set, val_set = random_split(
+            full_dataset,
+            lengths=[train_size, val_size],
+            generator=torch.Generator().manual_seed(config.seed),
+        )
 
     collate_fn = _build_collate_fn(config)
     train_loader = DataLoader(
@@ -297,6 +313,35 @@ def build_random_sequence_dataset(config: DataConfig) -> Dataset:
     )
 
 
+@DATASET_REGISTRY.register("motion_mimic")
+def build_motion_mimic_dataset(config: DataConfig) -> Dataset:
+    """Builds motion-mimic dataset from remapped robot motion NPZ files."""
+    resolved_motion_files = config.motion_files
+    if not resolved_motion_files and config.motion_file_yaml:
+        grouped_files = collect_npz_paths(config.motion_file_yaml)
+        if config.motion_group:
+            if config.motion_group not in grouped_files:
+                raise KeyError(
+                    f"Motion group '{config.motion_group}' not found in yaml "
+                    f"{config.motion_file_yaml}. Available: {list(grouped_files.keys())}"
+                )
+            resolved_motion_files = tuple(grouped_files[config.motion_group])
+        else:
+            merged: list[str] = []
+            for files in grouped_files.values():
+                merged.extend(files)
+            resolved_motion_files = tuple(merged)
+
+    motion_cfg = MotionDatasetConfig(
+        motion_files=resolved_motion_files,
+        feature_keys=config.motion_feature_keys,
+        as_sequence=config.motion_as_sequence,
+        frame_stride=config.motion_frame_stride,
+        normalize=config.motion_normalize,
+    )
+    return MotionMimicDataset(motion_cfg)
+
+
 def _build_collate_fn(config: DataConfig):
     """Builds collate function according to batch protocol config.
 
@@ -340,6 +385,13 @@ def _default_observations_cfg(config: DataConfig) -> ObservationsCfg:
         policy = ObsGroupCfg(
             name="policy",
             terms=(ObsTermCfg(name="sequence", source_key="sequence"),),
+            concatenate_terms=False,
+        )
+    elif dataset_name == "motion_mimic":
+        source_key = "sequence" if config.motion_as_sequence else "state"
+        policy = ObsGroupCfg(
+            name="policy",
+            terms=(ObsTermCfg(name=source_key, source_key=source_key),),
             concatenate_terms=False,
         )
     elif dataset_name == "mnist":
