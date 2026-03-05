@@ -236,20 +236,23 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
     dataset_builder = DATASET_REGISTRY.get(config.dataset)
     full_dataset = dataset_builder(config)
 
-    val_size = int(len(full_dataset) * config.val_ratio)
-    train_size = len(full_dataset) - val_size
-    if val_size == 0:
-        train_set = full_dataset
-        val_set = Subset(full_dataset, [])
-    elif train_size == 0:
-        train_set = Subset(full_dataset, [])
-        val_set = full_dataset
+    if isinstance(full_dataset, MotionMimicDataset) and not full_dataset.config.as_sequence:
+        train_set, val_set = _split_motion_frame_subsets(full_dataset, config)
     else:
-        train_set, val_set = random_split(
-            full_dataset,
-            lengths=[train_size, val_size],
-            generator=torch.Generator().manual_seed(config.seed),
-        )
+        val_size = int(len(full_dataset) * config.val_ratio)
+        train_size = len(full_dataset) - val_size
+        if val_size == 0:
+            train_set = full_dataset
+            val_set = Subset(full_dataset, [])
+        elif train_size == 0:
+            train_set = Subset(full_dataset, [])
+            val_set = full_dataset
+        else:
+            train_set, val_set = random_split(
+                full_dataset,
+                lengths=[train_size, val_size],
+                generator=torch.Generator().manual_seed(config.seed),
+            )
 
     collate_fn = _build_collate_fn(config)
     train_loader = DataLoader(
@@ -267,6 +270,44 @@ def create_dataloader(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         collate_fn=collate_fn,
     )
     return train_loader, val_loader
+
+
+def _split_motion_frame_subsets(
+    dataset: MotionMimicDataset,
+    config: DataConfig,
+) -> Tuple[Subset, Subset]:
+    """Splits motion dataset at frame level for frame-wise VAE sampling.
+
+    This function explicitly uses ``sequence_lengths`` to derive the total frame
+    count and create randomized frame indices. Therefore train/val partitions are
+    made on frame indices instead of trajectory indices.
+
+    Args:
+        dataset: MotionMimicDataset in frame mode.
+        config: Data configuration.
+
+    Returns:
+        Tuple of ``(train_subset, val_subset)`` on frame indices.
+    """
+    total_frames = int(sum(dataset.sequence_lengths))
+    if total_frames != len(dataset):
+        raise ValueError(
+            "Frame-mode MotionMimicDataset size mismatch: "
+            f"sum(sequence_lengths)={total_frames}, len(dataset)={len(dataset)}."
+        )
+
+    generator = torch.Generator().manual_seed(config.seed)
+    perm = torch.randperm(total_frames, generator=generator).tolist()
+    val_size = int(total_frames * config.val_ratio)
+    train_size = total_frames - val_size
+
+    if val_size == 0:
+        return Subset(dataset, perm), Subset(dataset, [])
+    if train_size == 0:
+        return Subset(dataset, []), Subset(dataset, perm)
+    train_indices = perm[:train_size]
+    val_indices = perm[train_size:]
+    return Subset(dataset, train_indices), Subset(dataset, val_indices)
 
 
 @DATASET_REGISTRY.register("random_binary")

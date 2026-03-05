@@ -60,6 +60,37 @@ class BaseVAE(nn.Module):
         x_hat = self.decode(z)
         return {"x_hat": x_hat, "mu": mu, "logvar": logvar, "z": z}
 
+    @staticmethod
+    def reconstruction_loss(
+        x_hat: torch.Tensor,
+        x: torch.Tensor,
+        mode: str = "auto",
+    ) -> torch.Tensor:
+        """Computes reconstruction loss with automatic mode selection.
+
+        Args:
+            x_hat: Reconstruction tensor.
+            x: Ground-truth tensor.
+            mode: One of ``"auto"``, ``"bce"``, or ``"mse"``.
+
+        Returns:
+            Batch-averaged reconstruction loss.
+        """
+        mode = mode.lower().strip()
+        if mode not in {"auto", "bce", "mse"}:
+            raise ValueError(f"Unsupported reconstruction loss mode: {mode}")
+
+        if mode == "auto":
+            x_in_range = bool(torch.logical_and(x >= 0.0, x <= 1.0).all().item())
+            xhat_in_range = bool(
+                torch.logical_and(x_hat >= 0.0, x_hat <= 1.0).all().item()
+            )
+            mode = "bce" if (x_in_range and xhat_in_range) else "mse"
+
+        if mode == "bce":
+            return F.binary_cross_entropy(x_hat, x, reduction="sum") / x.shape[0]
+        return F.mse_loss(x_hat, x, reduction="sum") / x.shape[0]
+
 
 class VanillaVAE(BaseVAE):
     """Standard VAE with MLP encoder/decoder and BCE reconstruction loss."""
@@ -70,6 +101,7 @@ class VanillaVAE(BaseVAE):
         latent_dim: int,
         hidden_dims: Iterable[int] = (512, 256),
         activation: str = "relu",
+        recon_loss_mode: str = "auto",
         config: MLPVAEConfig | None = None,
     ) -> None:
         """Initializes a Vanilla VAE.
@@ -79,6 +111,7 @@ class VanillaVAE(BaseVAE):
             latent_dim: Latent space dimension.
             hidden_dims: Shared hidden dimensions for encoder and decoder.
             activation: Activation name for hidden layers.
+            recon_loss_mode: Reconstruction loss mode in ``{"auto","bce","mse"}``.
             config: Optional MLPVAEConfig. If provided, it overrides architecture
                 arguments above.
         """
@@ -101,6 +134,7 @@ class VanillaVAE(BaseVAE):
             output_dim=input_dim,
             activation=activation,
         )
+        self.recon_loss_mode = recon_loss_mode
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encodes input into Gaussian posterior parameters."""
@@ -123,7 +157,7 @@ class VanillaVAE(BaseVAE):
             Dictionary with ``loss``, ``recon_loss``, and ``kl_loss``.
         """
         x_hat, mu, logvar = outputs["x_hat"], outputs["mu"], outputs["logvar"]
-        recon = F.binary_cross_entropy(x_hat, x, reduction="sum") / x.shape[0]
+        recon = self.reconstruction_loss(x_hat, x, mode=self.recon_loss_mode)
         kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / x.shape[0]
         total = recon + kl
         return {"loss": total, "recon_loss": recon, "kl_loss": kl}
@@ -193,6 +227,7 @@ class ConvVAE(BaseVAE):
     def __init__(
         self,
         latent_dim: int = 16,
+        recon_loss_mode: str = "auto",
         config: ConvVAEConfig | None = None,
     ) -> None:
         """Initializes a convolutional VAE.
@@ -222,6 +257,7 @@ class ConvVAE(BaseVAE):
             output_channels=config.image.channels,
             decoder_channels=tuple(reversed(config.encoder_channels[:-1])),
         )
+        self.recon_loss_mode = recon_loss_mode
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encodes image input into Gaussian parameters."""
@@ -244,7 +280,7 @@ class ConvVAE(BaseVAE):
             Dictionary with scalar loss terms.
         """
         x_hat, mu, logvar = outputs["x_hat"], outputs["mu"], outputs["logvar"]
-        recon = F.binary_cross_entropy(x_hat, x, reduction="sum") / x.shape[0]
+        recon = self.reconstruction_loss(x_hat, x, mode=self.recon_loss_mode)
         kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / x.shape[0]
         total = recon + kl
         return {"loss": total, "recon_loss": recon, "kl_loss": kl}

@@ -79,6 +79,28 @@ def test_motion_mimic_frame_mode_batch_protocol(tmp_path: Path) -> None:
     assert batch["obs"]["policy"].shape[0] == 4
 
 
+def test_motion_mimic_frame_mode_split_uses_frame_count(tmp_path: Path) -> None:
+    """Tests train/val split for motion frame mode is based on total frames."""
+    file_a = tmp_path / "motion_len10.npz"
+    file_b = tmp_path / "motion_len20.npz"
+    _write_motion_npz(file_a, length=10)
+    _write_motion_npz(file_b, length=20)
+
+    config = DataConfig(
+        dataset="motion_mimic",
+        batch_size=8,
+        val_ratio=0.2,
+        motion_files=(str(file_a), str(file_b)),
+        motion_feature_keys=("joint_pos", "joint_vel"),
+        motion_as_sequence=False,
+        use_batch_protocol=True,
+    )
+    train_loader, val_loader = create_dataloader(config)
+    # Total frames = 30. val=6, train=24 when split by frame.
+    assert len(train_loader.dataset) == 24
+    assert len(val_loader.dataset) == 6
+
+
 def test_motion_mimic_auto_infers_input_dim_for_mlp(tmp_path: Path) -> None:
     """Tests ExperimentManager infers MLP input_dim from motion feature keys."""
     file_a = tmp_path / "motion_auto_dim.npz"
