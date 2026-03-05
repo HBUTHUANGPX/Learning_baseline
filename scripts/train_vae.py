@@ -9,6 +9,7 @@ from typing import Dict, Iterable
 
 import torch
 from torch.optim import Adam
+from tqdm.auto import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -83,7 +84,7 @@ def train_one_epoch(
     agg = _init_agg(term.metric_keys)
     num_samples = 0
 
-    for batch in loader:
+    for batch in tqdm(loader, desc="Train", leave=False):
         x, _, losses = term.compute(batch, device=device)
         batch_size = int(x.shape[0])
         optimizer.zero_grad()
@@ -118,7 +119,7 @@ def validate_one_epoch(
     agg = _init_agg(term.metric_keys)
     num_samples = 0
 
-    for batch in loader:
+    for batch in tqdm(loader, desc="Val", leave=False):
         x, _, losses = term.compute(batch, device=device)
         batch_size = int(x.shape[0])
         num_samples += batch_size
