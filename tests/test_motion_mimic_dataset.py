@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import argparse
+import pytest
+import torch
 
 from modules.data import DataConfig, create_dataloader
 from scripts.train_vae import ExperimentManager
@@ -150,4 +152,60 @@ def test_motion_mimic_auto_infers_input_dim_for_mlp(tmp_path: Path) -> None:
     )
     manager = ExperimentManager(args)
     assert manager.args.input_dim == 14
+    manager.tb_logger.close()
+
+
+@pytest.mark.parametrize("model_name", ["conv", "vq", "fsq"])
+def test_motion_mimic_frame_mode_supports_conv_family(
+    tmp_path: Path, model_name: str
+) -> None:
+    """Tests frame-mode motion data can run conv/vq/fsq model families."""
+    file_a = tmp_path / f"motion_{model_name}.npz"
+    _write_motion_npz(file_a, length=10, joints=5)
+    args = argparse.Namespace(
+        algorithm="vae",
+        model=model_name,
+        dataset="motion_mimic",
+        input_dim=784,
+        image_channels=1,
+        image_height=28,
+        image_width=28,
+        latent_dim=8,
+        hidden_dims="16,8",
+        conv_channels="16,32",
+        conv_bottleneck_dim=64,
+        vq_decoder_channels="32,16",
+        activation="relu",
+        recon_loss_mode="mse",
+        beta=0.25,
+        num_embeddings=32,
+        fsq_levels=6,
+        epochs=1,
+        batch_size=4,
+        num_samples=8,
+        sequence_length=32,
+        sequence_feature_dim=16,
+        sequence_variable_length=False,
+        sequence_min_length=8,
+        motion_files=(str(file_a),),
+        motion_file_yaml="",
+        motion_group="",
+        motion_feature_keys=("joint_pos", "joint_vel"),
+        motion_as_sequence=False,
+        motion_frame_stride=1,
+        motion_normalize=False,
+        no_batch_protocol=False,
+        lr=1e-3,
+        seed=42,
+        deterministic=False,
+        device="cpu",
+        data_root=str(tmp_path / "data"),
+        log_root=str(tmp_path / "log"),
+    )
+    manager = ExperimentManager(args)
+    assert manager.args.input_dim == 10
+    batch = next(iter(manager.train_loader))
+    x, _, losses = manager.term.compute(batch, device=torch.device("cpu"))
+    assert x.ndim == 2
+    assert losses["loss"].dim() == 0
     manager.tb_logger.close()

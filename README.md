@@ -60,8 +60,10 @@ python -m pytest -q tests/test_batch_protocol_sequence.py
 
 Note:
 
-- Current VAE models are image/vector oriented and are not yet sequence-model architectures.
-- Sequence data pipeline is now available and ready for future diffusion/flow-matching integration.
+- `fsq` now supports sequence reconstruction with a temporal Conv1d + FSQ path
+  when using `data=random_sequence` or `data=motion_mimic` with
+  `data.motion_as_sequence=true`.
+- `conv`/`vq` remain image-model paths and expect 4D image batches.
 
 Image models (`conv`, `vq`, `fsq`) example:
 
@@ -81,6 +83,13 @@ Example for motion-like continuous data:
 
 ```bash
 python scripts/train_hydra.py data=motion_mimic data.motion_group=xsens_bvh model=vanilla model.recon_loss_mode=mse
+```
+
+FSQ sequence reconstruction examples:
+
+```bash
+python scripts/train_hydra.py model=fsq data=random_sequence model.recon_loss_mode=mse
+python scripts/train_hydra.py model=fsq data=motion_mimic data.motion_group=xsens_bvh data.motion_as_sequence=true model.recon_loss_mode=mse
 ```
 
 For stronger reproducibility across runs:

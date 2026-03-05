@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from modules.sequence_models import SequenceFSQModel
 from modules.vae import ConvVAE
 from modules.vqvae import FSQVAE, VQVAE
 
@@ -42,5 +43,24 @@ def test_fsqvae_forward_and_loss() -> None:
     losses = model.loss_function(x, outputs)
 
     assert outputs["x_hat"].shape == (2, 1, 28, 28)
+    assert set(losses.keys()) == {"loss", "recon_loss", "quant_loss", "perplexity"}
+    assert losses["loss"].dim() == 0
+
+
+def test_sequence_fsq_forward_and_loss() -> None:
+    """Tests SequenceFSQModel forward path for temporal inputs."""
+    model = SequenceFSQModel(
+        input_dim=6,
+        embedding_dim=8,
+        hidden_channels=16,
+        fsq_levels=6,
+        beta=0.25,
+    )
+    x = torch.rand(2, 12, 6)
+    mask = torch.ones(2, 12, dtype=torch.bool)
+    outputs = model(x)
+    losses = model.loss_function(x, outputs, mask=mask)
+
+    assert outputs["x_hat"].shape == (2, 12, 6)
     assert set(losses.keys()) == {"loss", "recon_loss", "quant_loss", "perplexity"}
     assert losses["loss"].dim() == 0

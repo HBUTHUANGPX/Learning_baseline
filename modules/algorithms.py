@@ -9,7 +9,9 @@ from typing import Dict, Protocol, Tuple
 import torch
 
 from .configs import ConvVAEConfig, ImageConfig, MLPVAEConfig, VQVAEConfig
+from .frame_models import FrameConvVAE, FrameFSQVAE, FrameVQVAE
 from .registry import Registry
+from .sequence_models import SequenceFSQModel
 from .vae import BetaVAE, ConvVAE, VanillaVAE
 from .vqvae import FSQVAE, VQVAE
 
@@ -20,6 +22,7 @@ class AlgorithmTerm(Protocol):
     model: torch.nn.Module
     metric_keys: Tuple[str, ...]
     expects_image_input: bool
+    expected_input_ndims: Tuple[int, ...]
 
     def compute(
         self,
@@ -44,6 +47,7 @@ class ModelSpec:
     model: torch.nn.Module
     metric_keys: Tuple[str, ...]
     expects_image_input: bool
+    expected_input_ndims: Tuple[int, ...]
 
 
 class VAEAlgorithmTerm:
@@ -54,6 +58,7 @@ class VAEAlgorithmTerm:
         model: torch.nn.Module,
         metric_keys: Tuple[str, ...],
         expects_image_input: bool,
+        expected_input_ndims: Tuple[int, ...] = (2,),
     ) -> None:
         """Initializes VAE algorithm term.
 
@@ -61,10 +66,12 @@ class VAEAlgorithmTerm:
             model: VAE-like model instance.
             metric_keys: Ordered metric names to aggregate.
             expects_image_input: Whether model expects image-shaped inputs.
+            expected_input_ndims: Allowed ranks for model inputs.
         """
         self.model = model
         self.metric_keys = metric_keys
         self.expects_image_input = expects_image_input
+        self.expected_input_ndims = expected_input_ndims
 
     def compute(
         self,
@@ -81,8 +88,17 @@ class VAEAlgorithmTerm:
             Tuple of ``(inputs, outputs, losses)``.
         """
         x = extract_algorithm_inputs(batch).to(device)
+        mask = extract_algorithm_mask(batch)
+        if mask is not None:
+            mask = mask.to(device)
         outputs = self.model(x)
-        losses = self.model.loss_function(x, outputs)
+        if mask is not None:
+            try:
+                losses = self.model.loss_function(x, outputs, mask=mask)
+            except TypeError:
+                losses = self.model.loss_function(x, outputs)
+        else:
+            losses = self.model.loss_function(x, outputs)
         return x, outputs, losses
 
 
@@ -112,6 +128,26 @@ def extract_algorithm_inputs(batch: torch.Tensor | tuple | dict) -> torch.Tensor
     return batch
 
 
+def extract_algorithm_mask(batch: torch.Tensor | tuple | dict) -> torch.Tensor | None:
+    """Extracts optional sequence mask from protocol batch.
+
+    Args:
+        batch: Tensor batch, tuple batch, or protocol dictionary.
+
+    Returns:
+        Sequence mask tensor if present, otherwise ``None``.
+    """
+    if not isinstance(batch, dict):
+        return None
+    meta = batch.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    mask = meta.get("policy_mask")
+    if isinstance(mask, torch.Tensor):
+        return mask
+    return None
+
+
 MODEL_REGISTRY: Registry = Registry("model")
 ALGORITHM_REGISTRY: Registry = Registry("algorithm")
 
@@ -137,6 +173,11 @@ def _parse_int_tuple(raw: str) -> Tuple[int, ...]:
     return tuple(int(x.strip()) for x in raw.split(",") if x.strip())
 
 
+def _is_motion_frame_mode(args: argparse.Namespace) -> bool:
+    """Checks whether current run uses motion_mimic frame-wise batches."""
+    return args.dataset == "motion_mimic" and not bool(args.motion_as_sequence)
+
+
 @MODEL_REGISTRY.register("vanilla")
 def build_vanilla_model(args: argparse.Namespace) -> ModelSpec:
     """Builds VanillaVAE model spec from args."""
@@ -158,6 +199,7 @@ def build_vanilla_model(args: argparse.Namespace) -> ModelSpec:
         model=model,
         metric_keys=("loss", "recon_loss", "kl_loss"),
         expects_image_input=False,
+        expected_input_ndims=(2,),
     )
 
 
@@ -183,12 +225,30 @@ def build_beta_model(args: argparse.Namespace) -> ModelSpec:
         model=model,
         metric_keys=("loss", "recon_loss", "kl_loss"),
         expects_image_input=False,
+        expected_input_ndims=(2,),
     )
 
 
 @MODEL_REGISTRY.register("conv")
 def build_conv_model(args: argparse.Namespace) -> ModelSpec:
     """Builds ConvVAE model spec from args."""
+    if _is_motion_frame_mode(args):
+        conv_channels = _parse_int_tuple(args.conv_channels)
+        hidden_channels = conv_channels[0] if len(conv_channels) > 0 else 64
+        model = FrameConvVAE(
+            input_dim=int(args.input_dim),
+            latent_dim=int(args.latent_dim),
+            hidden_channels=int(hidden_channels),
+            bottleneck_dim=int(args.conv_bottleneck_dim),
+            recon_loss_mode=str(args.recon_loss_mode),
+        )
+        return ModelSpec(
+            model=model,
+            metric_keys=("loss", "recon_loss", "kl_loss"),
+            expects_image_input=False,
+            expected_input_ndims=(2,),
+        )
+
     cfg = ConvVAEConfig(
         image=_build_image_cfg(args),
         latent_dim=args.latent_dim,
@@ -200,12 +260,31 @@ def build_conv_model(args: argparse.Namespace) -> ModelSpec:
         model=ConvVAE(recon_loss_mode=cfg.recon_loss_mode, config=cfg),
         metric_keys=("loss", "recon_loss", "kl_loss"),
         expects_image_input=True,
+        expected_input_ndims=(4,),
     )
 
 
 @MODEL_REGISTRY.register("vq")
 def build_vq_model(args: argparse.Namespace) -> ModelSpec:
     """Builds VQVAE model spec from args."""
+    if _is_motion_frame_mode(args):
+        conv_channels = _parse_int_tuple(args.conv_channels)
+        hidden_channels = conv_channels[0] if len(conv_channels) > 0 else 64
+        model = FrameVQVAE(
+            input_dim=int(args.input_dim),
+            embedding_dim=int(args.latent_dim),
+            hidden_channels=int(hidden_channels),
+            num_embeddings=int(args.num_embeddings),
+            beta=float(args.beta),
+            recon_loss_mode=str(args.recon_loss_mode),
+        )
+        return ModelSpec(
+            model=model,
+            metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
+            expects_image_input=False,
+            expected_input_ndims=(2,),
+        )
+
     cfg = VQVAEConfig(
         image=_build_image_cfg(args),
         embedding_dim=args.latent_dim,
@@ -220,12 +299,31 @@ def build_vq_model(args: argparse.Namespace) -> ModelSpec:
         model=VQVAE(recon_loss_mode=cfg.recon_loss_mode, config=cfg),
         metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
         expects_image_input=True,
+        expected_input_ndims=(4,),
     )
 
 
 @MODEL_REGISTRY.register("fsq")
 def build_fsq_model(args: argparse.Namespace) -> ModelSpec:
     """Builds FSQVAE model spec from args."""
+    if _is_motion_frame_mode(args):
+        conv_channels = _parse_int_tuple(args.conv_channels)
+        hidden_channels = conv_channels[0] if len(conv_channels) > 0 else 64
+        model = FrameFSQVAE(
+            input_dim=int(args.input_dim),
+            embedding_dim=int(args.latent_dim),
+            hidden_channels=int(hidden_channels),
+            fsq_levels=int(args.fsq_levels),
+            beta=float(args.beta),
+            recon_loss_mode=str(args.recon_loss_mode),
+        )
+        return ModelSpec(
+            model=model,
+            metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
+            expects_image_input=False,
+            expected_input_ndims=(2,),
+        )
+
     cfg = VQVAEConfig(
         image=_build_image_cfg(args),
         embedding_dim=args.latent_dim,
@@ -236,10 +334,32 @@ def build_fsq_model(args: argparse.Namespace) -> ModelSpec:
         fsq_levels=args.fsq_levels,
         recon_loss_mode=args.recon_loss_mode,
     )
+    is_sequence_dataset = args.dataset == "random_sequence" or (
+        args.dataset == "motion_mimic" and bool(args.motion_as_sequence)
+    )
+    if is_sequence_dataset:
+        conv_channels = _parse_int_tuple(args.conv_channels)
+        hidden_channels = conv_channels[0] if len(conv_channels) > 0 else 64
+        model = SequenceFSQModel(
+            input_dim=int(args.sequence_feature_dim),
+            embedding_dim=int(args.latent_dim),
+            hidden_channels=int(hidden_channels),
+            fsq_levels=int(args.fsq_levels),
+            beta=float(args.beta),
+            recon_loss_mode=str(args.recon_loss_mode),
+        )
+        return ModelSpec(
+            model=model,
+            metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
+            expects_image_input=False,
+            expected_input_ndims=(3, 2),
+        )
+
     return ModelSpec(
         model=FSQVAE(recon_loss_mode=cfg.recon_loss_mode, config=cfg),
         metric_keys=("loss", "recon_loss", "quant_loss", "perplexity"),
         expects_image_input=True,
+        expected_input_ndims=(4,),
     )
 
 
@@ -259,6 +379,7 @@ def build_vae_algorithm_term(args: argparse.Namespace) -> AlgorithmTerm:
         model=spec.model,
         metric_keys=spec.metric_keys,
         expects_image_input=spec.expects_image_input,
+        expected_input_ndims=spec.expected_input_ndims,
     )
 
 

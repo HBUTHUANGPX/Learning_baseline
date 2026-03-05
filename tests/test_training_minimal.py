@@ -117,3 +117,57 @@ def test_empty_validation_loader_is_handled(tmp_path: Path) -> None:
     manager.val_loader = val_loader
     manager._save_epoch_artifacts(epoch=1)
     manager.tb_logger.close()
+
+
+def test_fsq_with_sequence_dataset_runs_one_epoch(tmp_path: Path) -> None:
+    """Tests fsq model can train on sequence dataset via temporal CNN path."""
+    args = argparse.Namespace(
+        algorithm="vae",
+        model="fsq",
+        dataset="random_sequence",
+        input_dim=32,
+        image_channels=1,
+        image_height=28,
+        image_width=28,
+        latent_dim=8,
+        hidden_dims="16,8",
+        conv_channels="16,32",
+        conv_bottleneck_dim=64,
+        vq_decoder_channels="32,16",
+        activation="relu",
+        recon_loss_mode="mse",
+        beta=0.25,
+        num_embeddings=32,
+        fsq_levels=6,
+        epochs=1,
+        batch_size=4,
+        num_samples=16,
+        sequence_length=10,
+        sequence_feature_dim=6,
+        sequence_variable_length=True,
+        sequence_min_length=4,
+        motion_files=(),
+        motion_file_yaml="",
+        motion_group="",
+        motion_feature_keys=("joint_pos", "joint_vel"),
+        motion_as_sequence=True,
+        motion_frame_stride=1,
+        motion_normalize=False,
+        no_batch_protocol=False,
+        lr=1e-3,
+        seed=42,
+        deterministic=False,
+        device="cpu",
+        data_root=str(tmp_path / "data"),
+        log_root=str(tmp_path / "log"),
+    )
+    manager = ExperimentManager(args)
+    metrics = train_one_epoch(
+        manager.term,
+        manager.train_loader,
+        manager.optimizer,
+        device=torch.device("cpu"),
+    )
+    manager.tb_logger.close()
+    assert "loss" in metrics
+    assert metrics["loss"] >= 0.0

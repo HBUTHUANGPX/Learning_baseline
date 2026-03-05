@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from modules.algorithms import (
     AlgorithmTerm,
     VAEAlgorithmTerm,
+    extract_algorithm_inputs,
     build_algorithm_term,
 )
 from modules.data import DataConfig, create_dataloader
@@ -248,6 +249,7 @@ class ExperimentManager:
             use_batch_protocol=not args.no_batch_protocol,
         )
         self.train_loader, self.val_loader = create_dataloader(data_config)
+        self._validate_model_data_compatibility()
         self.term.model = self.term.model.to(self.device)
         self.optimizer = Adam(self.term.model.parameters(), lr=args.lr)
 
@@ -269,8 +271,6 @@ class ExperimentManager:
                 "which are incompatible with current MLP VAE models. "
                 "Use data.motion_as_sequence=false, or switch to a sequence-capable algorithm."
             )
-        if args.model not in {"vanilla", "beta"}:
-            return
 
         motion_files = _to_tuple(args.motion_files)
         if not motion_files:
@@ -297,7 +297,29 @@ class ExperimentManager:
             feature_keys=_to_tuple(args.motion_feature_keys),
             frame_stride=args.motion_frame_stride,
         )
-        args.input_dim = int(first_feature.shape[-1])
+        feature_dim = int(first_feature.shape[-1])
+        args.sequence_feature_dim = feature_dim
+        if not args.motion_as_sequence:
+            args.input_dim = feature_dim
+
+    def _validate_model_data_compatibility(self) -> None:
+        """Checks model-data tensor rank compatibility before training.
+
+        Raises:
+            RuntimeError: If both training and validation loaders are empty.
+            ValueError: If sampled input rank is unsupported by selected model term.
+        """
+        sample_loader = self._select_sample_loader()
+        if len(sample_loader) == 0:
+            raise RuntimeError("Cannot validate model-data compatibility on empty loader.")
+        sample_batch = next(iter(sample_loader))
+        x = extract_algorithm_inputs(sample_batch)
+        if x.ndim not in self.term.expected_input_ndims:
+            expected = ",".join(str(v) for v in self.term.expected_input_ndims)
+            raise ValueError(
+                "Model-data mismatch: selected model expects input ndim in "
+                f"{{{expected}}} but received shape {tuple(x.shape)}."
+            )
 
     def run(self) -> None:
         """Executes training loop for the configured number of epochs."""

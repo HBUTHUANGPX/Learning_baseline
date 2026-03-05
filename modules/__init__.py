@@ -14,6 +14,7 @@ from .conv import ConvDecoder, ConvGaussianEncoder, VQConvDecoder, VQConvEncoder
 from .data import DATASET_REGISTRY, create_dataloader
 from .decoders import MLPDecoder
 from .encoders import MLPGaussianEncoder
+from .frame_models import FrameConvVAE, FrameFSQVAE, FrameVQVAE
 from .observations import (
     ObsGroupCfg,
     ObsTermCfg,
@@ -22,6 +23,7 @@ from .observations import (
 )
 from .quantizers import FSQQuantizer, VectorQuantizer
 from .registry import Registry
+from .sequence_models import SequenceFSQModel
 from .vae import BetaVAE, ConvVAE, VanillaVAE
 from .vqvae import FSQVAE, VQVAE
 
@@ -50,8 +52,12 @@ __all__ = [
     "ObservationManager",
     "MLPDecoder",
     "MLPGaussianEncoder",
+    "FrameConvVAE",
+    "FrameVQVAE",
+    "FrameFSQVAE",
     "VectorQuantizer",
     "FSQQuantizer",
+    "SequenceFSQModel",
     "BetaVAE",
     "ConvVAE",
     "VanillaVAE",
