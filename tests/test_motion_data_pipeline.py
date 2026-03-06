@@ -24,6 +24,8 @@ def _write_motion_npz(path: Path, length: int = 12, joints: int = 6) -> None:
         fps=np.array(30.0, dtype=np.float32),
         joint_pos=rng.normal(size=(length, joints)).astype(np.float32),
         joint_vel=rng.normal(size=(length, joints)).astype(np.float32),
+        body_pos_w=rng.normal(size=(length, 8, 3)).astype(np.float32),
+        body_quat_w=rng.normal(size=(length, 8, 4)).astype(np.float32),
     )
 
 
@@ -86,3 +88,25 @@ def test_context_window_condition_and_target_shape() -> None:
     assert batch["encoder_input"].shape[1] == 48
     assert batch["decoder_condition"].shape[1] == 16
     assert batch["target"].shape[1] == 32
+
+
+def test_npz_keys_are_exposed_as_dataset_members() -> None:
+    """Tests NPZ keys are explicitly created as dataset members in __init__."""
+    root = Path("/tmp/motion_data_pipeline_members")
+    file_a = root / "a.npz"
+    _write_motion_npz(file_a, length=10, joints=5)
+
+    config = DataConfig(
+        batch_size=2,
+        val_ratio=0.0,
+        motion_files=(str(file_a),),
+        motion_feature_keys=("joint_pos", "joint_vel"),
+    )
+    train_loader, _, _, _, _ = create_motion_dataloaders(config)
+    dataset = train_loader.dataset.dataset
+
+    assert hasattr(dataset, "joint_pos")
+    assert hasattr(dataset, "joint_vel")
+    assert hasattr(dataset, "body_pos_w")
+    assert hasattr(dataset, "body_quat_w")
+    assert hasattr(dataset, "fps")
