@@ -1,9 +1,9 @@
-batch_size: 4096
+batch_size: 16384
 val_ratio: 0.2
 motion_files: []
 motion_file_yaml: configs/data/motion_file.yaml
 motion_group: ""
-motion_feature_keys: [joint_pos, joint_vel]
+motion_feature_keys: [joint_pos, body_pos_w, body_quat_w]
 motion_frame_stride: 1
 motion_normalize: false
 history_frames: 0
