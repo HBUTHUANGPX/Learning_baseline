@@ -1,4 +1,4 @@
-"""Training entrypoint for frame-level motion VQ-VAE and FSQ-VAE."""
+"""Training entrypoint for context-aware motion VQ-VAE and FSQ-VAE."""
 
 from __future__ import annotations
 
@@ -26,14 +26,16 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed argument namespace.
     """
-    parser = argparse.ArgumentParser(description="Train frame-level motion VQ/FSQ.")
+    parser = argparse.ArgumentParser(description="Train context-aware motion VQ/FSQ.")
     parser.add_argument("--model", choices=["vq", "fsq"], default="fsq")
     parser.add_argument("--embedding-dim", type=int, default=32)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--num-embeddings", type=int, default=512)
     parser.add_argument("--fsq-levels", type=int, default=8)
     parser.add_argument("--beta", type=float, default=0.25)
-    parser.add_argument("--recon-loss-mode", choices=["auto", "bce", "mse"], default="mse")
+    parser.add_argument(
+        "--recon-loss-mode", choices=["auto", "bce", "mse"], default="mse"
+    )
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -41,11 +43,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--motion-files", type=str, default="")
-    parser.add_argument("--motion-file-yaml", type=str, default="configs/data/motion_file.yaml")
+    parser.add_argument(
+        "--motion-file-yaml", type=str, default="configs/data/motion_file.yaml"
+    )
     parser.add_argument("--motion-group", type=str, default="")
     parser.add_argument("--motion-feature-keys", type=str, default="joint_pos,joint_vel")
     parser.add_argument("--motion-frame-stride", type=int, default=1)
     parser.add_argument("--motion-normalize", action="store_true")
+    parser.add_argument("--history-frames", type=int, default=0)
+    parser.add_argument("--future-frames", type=int, default=0)
+    parser.add_argument(
+        "--reconstruction-target",
+        choices=["all", "current", "future"],
+        default="current",
+    )
+    parser.add_argument("--future-target-offset", type=int, default=1)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--log-root", type=str, default="./log")
     return parser.parse_args()
@@ -81,12 +93,17 @@ def _select_device(raw: str) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _build_model(args: argparse.Namespace, input_dim: int) -> torch.nn.Module:
+def _build_model(
+    args: argparse.Namespace,
+    input_dim: int,
+    output_dim: int,
+) -> torch.nn.Module:
     """Builds VQ or FSQ model from training arguments.
 
     Args:
         args: Training argument namespace.
-        input_dim: Frame feature dimension inferred from dataset.
+        input_dim: Input feature dimension inferred from dataset.
+        output_dim: Reconstruction target dimension inferred from dataset.
 
     Returns:
         Constructed model instance.
@@ -94,6 +111,7 @@ def _build_model(args: argparse.Namespace, input_dim: int) -> torch.nn.Module:
     if args.model == "vq":
         return FrameVQVAE(
             input_dim=input_dim,
+            output_dim=output_dim,
             embedding_dim=args.embedding_dim,
             hidden_dim=args.hidden_dim,
             num_embeddings=args.num_embeddings,
@@ -102,6 +120,7 @@ def _build_model(args: argparse.Namespace, input_dim: int) -> torch.nn.Module:
         )
     return FrameFSQVAE(
         input_dim=input_dim,
+        output_dim=output_dim,
         embedding_dim=args.embedding_dim,
         hidden_dim=args.hidden_dim,
         fsq_levels=args.fsq_levels,
@@ -130,14 +149,20 @@ def _run_epoch(
     is_train = optimizer is not None
     model.train(is_train)
 
-    metric_sum = {"loss": 0.0, "recon_loss": 0.0, "quant_loss": 0.0, "perplexity": 0.0}
+    metric_sum = {
+        "loss": 0.0,
+        "recon_loss": 0.0,
+        "quant_loss": 0.0,
+        "perplexity": 0.0,
+    }
     sample_count = 0
 
     progress = tqdm(loader, desc="Train" if is_train else "Val", leave=False)
     for batch in progress:
-        x = batch["state"].to(device)
+        x = batch["input"].to(device)
+        target = batch["target"].to(device)
         outputs = model(x)
-        losses = model.loss_function(x, outputs)
+        losses = model.loss_function(target, outputs)
 
         if is_train:
             optimizer.zero_grad()
@@ -178,10 +203,14 @@ def main(args: argparse.Namespace | None = None) -> None:
         motion_feature_keys=_to_tuple(args.motion_feature_keys),
         motion_frame_stride=args.motion_frame_stride,
         motion_normalize=args.motion_normalize,
+        history_frames=args.history_frames,
+        future_frames=args.future_frames,
+        reconstruction_target=args.reconstruction_target,
+        future_target_offset=args.future_target_offset,
     )
-    train_loader, val_loader, input_dim = create_motion_dataloaders(data_config)
+    train_loader, val_loader, input_dim, target_dim = create_motion_dataloaders(data_config)
 
-    model = _build_model(args, input_dim=input_dim).to(device)
+    model = _build_model(args, input_dim=input_dim, output_dim=target_dim).to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(1, args.epochs + 1):
@@ -199,6 +228,7 @@ def main(args: argparse.Namespace | None = None) -> None:
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
                 "input_dim": input_dim,
+                "target_dim": target_dim,
             },
             checkpoint_path,
         )

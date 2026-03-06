@@ -6,3 +6,7 @@ motion_group: ""
 motion_feature_keys: [joint_pos, joint_vel]
 motion_frame_stride: 1
 motion_normalize: false
+history_frames: 0
+future_frames: 0
+reconstruction_target: current
+future_target_offset: 1

@@ -14,6 +14,28 @@ This repository is intentionally slimmed down to only keep:
 - `utils/`: seed helper, tensorboard logger, motion-file YAML parser
 - `tests/`: minimal pytest coverage
 
+## Temporal Indexing
+
+Data indexing supports context windows and flexible reconstruction targets:
+
+- input context: `history_frames` + current + `future_frames`
+- reconstruction target modes:
+  - `current`: reconstruct only current frame
+  - `future`: reconstruct one future frame (`future_target_offset`)
+  - `all`: reconstruct the whole context window
+
+Hydra overrides example:
+
+```bash
+python scripts/train_hydra.py \
+  model=fsq \
+  data.motion_group=xsens_bvh \
+  data.history_frames=4 \
+  data.future_frames=2 \
+  data.reconstruction_target=future \
+  data.future_target_offset=2
+```
+
 ## Training
 
 Hydra entrypoint:
@@ -29,6 +51,9 @@ python scripts/train_motion_vqvae.py \
   --model fsq \
   --motion-file-yaml configs/data/motion_file.yaml \
   --motion-group xsens_bvh \
+  --history-frames 4 \
+  --future-frames 2 \
+  --reconstruction-target current \
   --epochs 200 \
   --batch-size 1024
 ```

@@ -1,4 +1,4 @@
-"""MuJoCo playback evaluation for frame-level motion VQ/FSQ models."""
+"""MuJoCo playback evaluation for context-aware motion VQ/FSQ models."""
 
 from __future__ import annotations
 
@@ -79,7 +79,12 @@ def _resolve_motion_file(motion_file: str, motion_yaml: str, motion_group: str) 
     return Path(files[0]).expanduser().resolve()
 
 
-def _load_arrays(path: Path, feature_keys: tuple[str, ...], qpos_key: str, stride: int) -> tuple[np.ndarray, np.ndarray, float]:
+def _load_arrays(
+    path: Path,
+    feature_keys: tuple[str, ...],
+    qpos_key: str,
+    stride: int,
+) -> tuple[np.ndarray, np.ndarray, float]:
     """Loads model input feature array and qpos target array.
 
     Args:
@@ -115,6 +120,48 @@ def _load_arrays(path: Path, feature_keys: tuple[str, ...], qpos_key: str, strid
     return features, qpos, fps
 
 
+def _build_context_eval_inputs(
+    features: np.ndarray,
+    qpos: np.ndarray,
+    history_frames: int,
+    future_frames: int,
+    reconstruction_target: str,
+    future_target_offset: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Builds context-indexed eval inputs and aligned qpos targets.
+
+    Args:
+        features: Frame features with shape ``[T, D]``.
+        qpos: Ground-truth qpos with shape ``[T, Dq]``.
+        history_frames: Number of history frames in input window.
+        future_frames: Number of future frames in input window.
+        reconstruction_target: Target mode ``all/current/future``.
+        future_target_offset: Offset used for future target mode.
+
+    Returns:
+        Tuple ``(inputs, qpos_aligned, center_indices)``.
+    """
+    min_center = int(history_frames)
+    max_center = int(features.shape[0]) - 1 - int(future_frames)
+    if max_center < min_center:
+        raise ValueError("No valid centers for requested history/future settings.")
+
+    centers = np.arange(min_center, max_center + 1, dtype=np.int64)
+    windows = []
+    for center in centers:
+        window = features[center - history_frames : center + future_frames + 1]
+        windows.append(window.reshape(-1))
+    inputs = np.stack(windows, axis=0).astype(np.float32)
+
+    mode = reconstruction_target.lower().strip()
+    if mode == "future":
+        qpos_indices = centers + int(future_target_offset)
+    else:
+        qpos_indices = centers
+    qpos_aligned = qpos[qpos_indices]
+    return inputs, qpos_aligned, centers
+
+
 def parse_args() -> argparse.Namespace:
     """Parses CLI arguments for evaluation."""
     parser = argparse.ArgumentParser(description="Evaluate motion VQ/FSQ in MuJoCo.")
@@ -145,10 +192,26 @@ def main() -> None:
     feature_keys = _to_tuple(args.motion_feature_keys)
     features, qpos_gt, fps = _load_arrays(motion_path, feature_keys, args.qpos_key, args.frame_stride)
 
-    input_dim = int(ckpt.get("input_dim", features.shape[1]))
+    history_frames = int(train_args.get("history_frames", 0))
+    future_frames = int(train_args.get("future_frames", 0))
+    reconstruction_target = str(train_args.get("reconstruction_target", "current"))
+    future_target_offset = int(train_args.get("future_target_offset", 1))
+
+    eval_inputs, eval_qpos, _ = _build_context_eval_inputs(
+        features=features,
+        qpos=qpos_gt,
+        history_frames=history_frames,
+        future_frames=future_frames,
+        reconstruction_target=reconstruction_target,
+        future_target_offset=future_target_offset,
+    )
+
+    input_dim = int(ckpt.get("input_dim", eval_inputs.shape[1]))
+    target_dim = int(ckpt.get("target_dim", input_dim))
     if train_args["model"] == "vq":
         model = FrameVQVAE(
             input_dim=input_dim,
+            output_dim=target_dim,
             embedding_dim=int(train_args["embedding_dim"]),
             hidden_dim=int(train_args["hidden_dim"]),
             num_embeddings=int(train_args["num_embeddings"]),
@@ -158,6 +221,7 @@ def main() -> None:
     else:
         model = FrameFSQVAE(
             input_dim=input_dim,
+            output_dim=target_dim,
             embedding_dim=int(train_args["embedding_dim"]),
             hidden_dim=int(train_args["hidden_dim"]),
             fsq_levels=int(train_args["fsq_levels"]),
@@ -175,7 +239,7 @@ def main() -> None:
     model = model.to(device)
     model.eval()
 
-    qpos_dim = int(args.qpos_dim) if args.qpos_dim > 0 else int(qpos_gt.shape[1])
+    qpos_dim = int(args.qpos_dim) if args.qpos_dim > 0 else int(eval_qpos.shape[1])
 
     import mujoco
     from mujoco import viewer
@@ -188,29 +252,29 @@ def main() -> None:
 
     dt = 1.0 / max(float(fps), 1e-6)
 
-    def _step(frame_index: int) -> None:
+    def _step(eval_index: int) -> None:
         """Runs one inference step and writes qpos to MuJoCo.
 
         Args:
-            frame_index: Current frame index.
+            eval_index: Current sample index in context-eval sequence.
         """
-        frame = torch.from_numpy(features[frame_index]).float().unsqueeze(0).to(device)
+        frame = torch.from_numpy(eval_inputs[eval_index]).float().unsqueeze(0).to(device)
         with torch.no_grad():
             x_hat = model(frame)["x_hat"].detach().cpu().numpy().reshape(-1)
         start = int(args.qpos_slice_start)
         stop = start + qpos_dim
         recon_qpos = x_hat[start:stop]
-        write_qpos = qpos_gt[frame_index, :qpos_dim] if args.write_source == "gt" else recon_qpos
+        write_qpos = eval_qpos[eval_index, :qpos_dim] if args.write_source == "gt" else recon_qpos
         mj_data.qpos[args.qpos_start_idx : args.qpos_start_idx + qpos_dim] = write_qpos
         mujoco.mj_forward(mj_model, mj_data)
 
     if args.headless:
-        for index in range(features.shape[0]):
+        for index in range(eval_inputs.shape[0]):
             _step(index)
         return
 
     with viewer.launch_passive(mj_model, mj_data) as gui:
-        for index in range(features.shape[0]):
+        for index in range(eval_inputs.shape[0]):
             start_t = time.perf_counter()
             _step(index)
             gui.sync()

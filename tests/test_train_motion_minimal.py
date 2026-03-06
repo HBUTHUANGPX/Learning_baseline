@@ -1,4 +1,4 @@
-"""Minimal smoke test for motion VQ/FSQ training loop."""
+"""Minimal smoke test for context-aware motion VQ/FSQ training loop."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
+import torch
 
-from scripts.train_motion_vqvae import main
+from scripts.train_motion_vqvae import _build_model, main
 
 
 def _write_motion_npz(path: Path, length: int = 20, joints: int = 6) -> None:
@@ -29,7 +30,7 @@ def _write_motion_npz(path: Path, length: int = 20, joints: int = 6) -> None:
 
 
 def test_train_motion_vqvae_one_epoch(tmp_path: Path) -> None:
-    """Tests one epoch of frame-level FSQ training end-to-end."""
+    """Tests one epoch of context-aware FSQ training end-to-end."""
     file_a = tmp_path / "motion.npz"
     _write_motion_npz(file_a)
 
@@ -53,6 +54,10 @@ def test_train_motion_vqvae_one_epoch(tmp_path: Path) -> None:
         motion_feature_keys="joint_pos,joint_vel",
         motion_frame_stride=1,
         motion_normalize=False,
+        history_frames=2,
+        future_frames=1,
+        reconstruction_target="current",
+        future_target_offset=1,
         val_ratio=0.2,
         log_root=str(tmp_path / "log"),
     )
@@ -60,3 +65,23 @@ def test_train_motion_vqvae_one_epoch(tmp_path: Path) -> None:
 
     checkpoints = list((tmp_path / "log").glob("*/checkpoint/epoch_001.pt"))
     assert len(checkpoints) == 1
+
+
+def test_build_model_supports_different_output_dim() -> None:
+    """Tests model factory supports input-target dimension mismatch."""
+    args = Namespace(
+        model="vq",
+        embedding_dim=8,
+        hidden_dim=32,
+        num_embeddings=16,
+        fsq_levels=6,
+        beta=0.25,
+        recon_loss_mode="mse",
+    )
+    model = _build_model(args, input_dim=24, output_dim=6)
+    x = torch.rand(2, 24)
+    target = torch.rand(2, 6)
+    outputs = model(x)
+    losses = model.loss_function(target, outputs)
+    assert outputs["x_hat"].shape == (2, 6)
+    assert losses["loss"].dim() == 0
