@@ -9,7 +9,8 @@ from typing import MutableMapping, Sequence
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-
+from utils.urdf_graph import UrdfGraph
+from utils.math import *
 
 def _flatten_temporal_tensor(tensor: torch.Tensor) -> torch.Tensor:
     """Flattens a temporal tensor to ``[T, D]``.
@@ -121,9 +122,10 @@ class MotionFrameDataset(Dataset):
     Data flow:
     1. Load each trajectory NPZ.
     2. Expose all NPZ keys as explicit ``self.<key>`` list members in ``__init__``.
-    3. Build selected training features and concatenate them into
+    3. (Optional) Prepare extra feature members derived from raw NPZ members.
+    4. Build selected training features and concatenate them into
        ``self.sequence_bank`` with shape ``[total_frames, feature_dim]``.
-    4. Build valid center indices as tensors ``self.center_seq_ids`` and
+    5. Build valid center indices as tensors ``self.center_seq_ids`` and
        ``self.center_local_ids`` for fast deterministic indexing.
     """
 
@@ -141,13 +143,18 @@ class MotionFrameDataset(Dataset):
         # Every key discovered in NPZ files is attached as ``self.<key>`` and
         # stores a per-trajectory list of raw tensors.
         self._npz_keys: list[str] = []
+        self._npz_member_cat: dict[str, torch.Tensor] = {}
         self._sequence_feature_tensors: list[torch.Tensor] = []
 
         for path in self.paths:
-            self._load_npz_to_members(path)
+            self._read_npz_to_member_lists(path)
+
+        self._finalize_npz_member_cache()
+        self._prepare_feature_members()
+        self._sequence_feature_tensors = self._build_sequence_feature_tensors()
 
         if not self._sequence_feature_tensors:
-            raise ValueError("No trajectory features were loaded.")
+            raise ValueError("No trajectory feature tensors were built.")
 
         if config.normalize:
             all_frames = torch.cat(self._sequence_feature_tensors, dim=0)
@@ -175,6 +182,8 @@ class MotionFrameDataset(Dataset):
         self.encoder_window = 1 + int(config.history_frames) + int(config.future_frames)
         self.target_window = 1 + int(config.future_frames)
         self.condition_window = int(config.history_frames)
+        self.history_frames = int(config.history_frames)
+        self.future_frames = int(config.future_frames)
 
         self.encoder_input_dim = self.encoder_window * self.frame_dim
         self.decoder_condition_dim = self.condition_window * self.frame_dim
@@ -189,41 +198,117 @@ class MotionFrameDataset(Dataset):
 
     def _validate_temporal_config(self) -> None:
         """Validates temporal indexing settings."""
+        if self.config.frame_stride < 1:
+            raise ValueError("frame_stride must be >= 1.")
         if self.config.history_frames < 0 or self.config.future_frames < 0:
             raise ValueError("history_frames and future_frames must be >= 0.")
 
-    def _load_npz_to_members(self, path: Path) -> None:
+    def _read_npz_to_member_lists(self, path: Path) -> None:
         """Loads one NPZ and writes all keys as explicit class members.
 
         Args:
             path: Source NPZ path.
-
-        Raises:
-            KeyError: If requested ``feature_keys`` are not found.
-            ValueError: If selected feature lengths mismatch.
         """
         with np.load(str(path)) as data:
             # Explicitly expose every NPZ key as ``self.<key>`` list member.
             for key in data.files:
                 if key not in self._npz_keys:
                     self._npz_keys.append(key)
-                    # setattr(self, key, [])
-                    setattr(self, key, torch.as_tensor(data[key], dtype=torch.float32))
+                    setattr(self, key, [])
+                getattr(self, key).append(torch.as_tensor(data[key], dtype=torch.float32))
 
-            sequence_index = len(self._sequence_feature_tensors)
+    def _finalize_npz_member_cache(self) -> None:
+        """Builds concatenated per-key cache tensors after all NPZ are loaded.
+
+        The original list members (``self.<key>``) are preserved for explicit
+        per-sequence indexing. The concatenated cache is exposed via
+        ``self._npz_member_cat[key]`` for faster global access when needed.
+        """
+        for key in self._npz_keys:
+            sequence_tensors: list[torch.Tensor] = getattr(self, key)
+            if not sequence_tensors:
+                continue
+
+            # Scalars cannot be flattened as temporal tensors; stack them by file.
+            if all(tensor.ndim == 0 for tensor in sequence_tensors):
+                self._npz_member_cat[key] = torch.stack(sequence_tensors, dim=0).contiguous()
+                continue
+
+            base_shape = sequence_tensors[0].shape[1:]
+            can_cat = all(
+                tensor.ndim >= 1 and tensor.shape[1:] == base_shape for tensor in sequence_tensors
+            )
+            if can_cat:
+                self._npz_member_cat[key] = torch.cat(sequence_tensors, dim=0).contiguous()
+
+    def _prepare_feature_members(self) -> None:
+        """Hook for user-defined member preprocessing before feature building.
+
+        ``config.feature_keys`` can reference either:
+        1. raw NPZ keys already exposed as ``self.<key>``, or
+        2. new members built here, e.g. ``self.my_feature`` as list[Tensor].
+        """
+        # Reserved for custom feature construction from raw members.
+        # Example:
+        # self.my_feature = [build(seq) for seq in self.some_raw_key]
+        urdf_graph = UrdfGraph("/home/hpx/HPX_LOCO_2/mimic_baseline/general_motion_tracker_whole_body_teleoperation/general_motion_tracker_whole_body_teleoperation/assets/Q1/urdf/Q1_wo_hand_rl.urdf")  # Example of using UrdfGraph if needed.
+        isaac_sim_link_name = urdf_graph.bfs_link_order()
+        motion_reference_body = "torso_link"
+        motion_body_names = [
+            "pelvis_link",
+            "L_hip_yaw_link",
+            "L_knee_link",
+            "L_ankle_roll_link",
+            "R_hip_yaw_link",
+            "R_knee_link",
+            "R_ankle_roll_link",
+            "torso_link",
+            "L_shoulder_roll_link",
+            "L_elbow_link",
+            "L_wrist_pitch_link",
+            "R_shoulder_roll_link",
+            "R_elbow_link",
+            "R_wrist_pitch_link",
+            "head_pitch_link",
+        ]
+        self.motion_body_names_in_isaacsim_index = [
+            isaac_sim_link_name.index(name) for name in motion_body_names
+        ]
+        self.motion_reference_body_names_in_isaacsim_index = motion_body_names.index(motion_reference_body)
+        self.root_pos_w = self._npz_member_cat["body_pos_w"][:,self.motion_reference_body_names_in_isaacsim_index,:]
+        self.root_quat_w = self._npz_member_cat["body_quat_w"][:,self.motion_reference_body_names_in_isaacsim_index,:]
+        self.root_euler_w = torch.stack(euler_xyz_from_quat(self.root_quat_w),dim=-1)
+        # ϕ(rt) = [sin(rollt), cos(rollt) − 1, sin(pitcht), cos(pitcht) − 1] 
+        self.continuous_trigonometric_encoding = torch.cat(
+            [
+                torch.sin(self.root_euler_w[:, 0:1]),
+                torch.cos(self.root_euler_w[:, 0:1]) - 1,
+                torch.sin(self.root_euler_w[:, 1:2]),
+                torch.cos(self.root_euler_w[:, 1:2]) - 1,
+            ],
+            dim=1,
+        )
+        # TODO： delta部分应该是在单一轨迹层面进行计算的，当前实现是全局层面进行的，可能会引入跨轨迹的错误增量
+        # ∆ψt = yawt+1 − yawt denotes the incremental change of the root yaw
+        diffs = torch.diff(self.root_euler_w[:, 2:3], dim=0)                                       # 相邻差分，形状 (N-1, 1)
+        self.delta_yaw = torch.cat([diffs[0:1], diffs], dim=0)
+
+        # ∆qt = qt+1 − qt the corresponding joint-wise increments
+        self.delta_joint_pos = torch.diff(self._npz_member_cat["joint_pos"], dim=0, prepend=self._npz_member_cat["joint_pos"][0:1])
+        return
+
+    def _build_sequence_feature_tensors(self) -> list[torch.Tensor]:
+        """Builds per-sequence frame features from configured member keys."""
+        sequence_features: list[torch.Tensor] = []
+        num_sequences = len(self.paths)
+
+        for sequence_id in range(num_sequences):
             parts: list[torch.Tensor] = []
             lengths: list[int] = []
 
             for key in self.config.feature_keys:
-                if not hasattr(self, key):
-                    raise KeyError(f"Feature key '{key}' not found in {path}.")
-                raw_list = getattr(self, key)
-                if sequence_index >= len(raw_list):
-                    raise KeyError(
-                        f"Feature key '{key}' is missing in {path} for sequence index {sequence_index}."
-                    )
-                raw_tensor = raw_list[sequence_index]
-                part = _flatten_temporal_tensor(raw_tensor)
+                member_tensor = self._get_member_sequence_tensor(key, sequence_id)
+                part = _flatten_temporal_tensor(member_tensor)
                 if self.config.frame_stride > 1:
                     part = part[:: self.config.frame_stride]
                 parts.append(part)
@@ -231,10 +316,29 @@ class MotionFrameDataset(Dataset):
 
             if len(set(lengths)) != 1:
                 raise ValueError(
-                    f"Inconsistent selected feature lengths in {path}: {lengths}"
+                    f"Inconsistent selected feature lengths in sequence {sequence_id}: {lengths}"
                 )
+            sequence_features.append(torch.cat(parts, dim=1).contiguous())
 
-            self._sequence_feature_tensors.append(torch.cat(parts, dim=1).contiguous())
+        return sequence_features
+
+    def _get_member_sequence_tensor(self, key: str, sequence_id: int) -> torch.Tensor:
+        """Returns one sequence tensor from a member list, validating shape."""
+        if not hasattr(self, key):
+            raise KeyError(
+                f"Feature key '{key}' is not available as dataset member. "
+                "If this is a derived feature, create self.<key> in "
+                "_prepare_feature_members()."
+            )
+        tensors = getattr(self, key)
+        if not isinstance(tensors, list):
+            raise TypeError(f"Dataset member '{key}' must be list[Tensor], got {type(tensors)}.")
+        if sequence_id >= len(tensors):
+            raise IndexError(
+                f"Feature member '{key}' has {len(tensors)} sequences, "
+                f"but sequence index {sequence_id} was requested."
+            )
+        return torch.as_tensor(tensors[sequence_id], dtype=torch.float32)
 
     def _build_center_index_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Builds tensorized center index arrays.
@@ -242,13 +346,13 @@ class MotionFrameDataset(Dataset):
         Returns:
             Tuple of ``(center_seq_ids, center_local_ids)`` tensors.
         """
-        min_center = int(self.config.history_frames)
+        min_center = self.history_frames
         center_seq_list: list[torch.Tensor] = []
         center_local_list: list[torch.Tensor] = []
 
         for sequence_id in range(self.num_sequences):
             seq_len = int(self.sequence_lengths_tensor[sequence_id].item())
-            max_center = seq_len - 1 - int(self.config.future_frames)
+            max_center = seq_len - 1 - self.future_frames
             if max_center < min_center:
                 continue
             centers = torch.arange(min_center, max_center + 1, dtype=torch.long)
@@ -278,8 +382,8 @@ class MotionFrameDataset(Dataset):
         center_id = int(self.center_local_ids[index].item())
         seq_start = int(self.sequence_start[sequence_id].item())
 
-        history = int(self.config.history_frames)
-        future = int(self.config.future_frames)
+        history = self.history_frames
+        future = self.future_frames
 
         enc_start = seq_start + center_id - history
         enc_end = seq_start + center_id + future + 1
