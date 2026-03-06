@@ -1,4 +1,4 @@
-epochs: 3
+epochs: 100
 seed: 42
 deterministic: false
 device: auto

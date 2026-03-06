@@ -1,15 +1,7 @@
 name: vq
-input_dim: 784
-latent_dim: 16
-hidden_dims: [256, 128]
-activation: relu
-recon_loss_mode: auto
-beta: 0.25
-conv_channels: [32, 64]
-conv_bottleneck_dim: 256
-vq_decoder_channels: [64, 32]
-num_embeddings: 128
+embedding_dim: 32
+hidden_dim: 256
+num_embeddings: 512
 fsq_levels: 8
-image_channels: 1
-image_height: 28
-image_width: 28
+beta: 0.25
+recon_loss_mode: mse

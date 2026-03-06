@@ -1,7 +1,6 @@
 defaults:
-  - data: random_binary
-  - model: vanilla
-  - algo: vae
+  - data: motion_mimic
+  - model: fsq
   - optim: adam
   - train: default
   - log: default
@@ -9,7 +8,7 @@ defaults:
 
 hydra:
   run:
-    dir: ./log/${now:%Y%m%d_%H%M%S}
+    dir: ${log.root}/${now:%Y%m%d_%H%M%S}
   output_subdir: null
   job:
     chdir: false

@@ -1,16 +1,16 @@
-"""Hydra-based training entrypoint with layered configuration composition."""
+"""Hydra entrypoint for frame-level motion VQ/FSQ training."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterable
+from typing import Any
 
 try:
     import hydra
     from omegaconf import DictConfig, OmegaConf
-except Exception:  # pragma: no cover - handled explicitly at runtime.
+except Exception:  # pragma: no cover
     hydra = None
     DictConfig = Any  # type: ignore[assignment]
     OmegaConf = None  # type: ignore[assignment]
@@ -19,87 +19,62 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from scripts.train_vae import ExperimentManager
-from utils import set_seed
-
-
-def _to_csv(values: Iterable[int]) -> str:
-    """Converts a sequence of integers into comma-separated text."""
-    return ",".join(str(int(v)) for v in values)
+from scripts.train_motion_vqvae import main as train_main
 
 
 def _cfg_to_namespace(cfg: DictConfig) -> SimpleNamespace:
-    """Converts Hydra dict config into legacy manager namespace.
+    """Converts Hydra config to training-namespace schema.
 
     Args:
         cfg: Composed Hydra configuration.
 
     Returns:
-        Namespace compatible with ``ExperimentManager``.
+        Namespace accepted by ``train_motion_vqvae.main``.
     """
     return SimpleNamespace(
-        algorithm=cfg.algo.name,
-        model=cfg.model.name,
-        dataset=cfg.data.name,
-        input_dim=int(cfg.model.input_dim),
-        image_channels=int(cfg.model.image_channels),
-        image_height=int(cfg.model.image_height),
-        image_width=int(cfg.model.image_width),
-        latent_dim=int(cfg.model.latent_dim),
-        hidden_dims=_to_csv(cfg.model.hidden_dims),
-        conv_channels=_to_csv(cfg.model.conv_channels),
-        conv_bottleneck_dim=int(cfg.model.conv_bottleneck_dim),
-        vq_decoder_channels=_to_csv(cfg.model.vq_decoder_channels),
-        activation=str(cfg.model.activation),
-        recon_loss_mode=str(cfg.model.recon_loss_mode),
-        beta=float(cfg.model.beta),
+        model=str(cfg.model.name),
+        embedding_dim=int(cfg.model.embedding_dim),
+        hidden_dim=int(cfg.model.hidden_dim),
         num_embeddings=int(cfg.model.num_embeddings),
         fsq_levels=int(cfg.model.fsq_levels),
-        epochs=int(cfg.train.epochs),
+        beta=float(cfg.model.beta),
+        recon_loss_mode=str(cfg.model.recon_loss_mode),
         batch_size=int(cfg.data.batch_size),
-        num_samples=int(cfg.data.num_samples),
-        sequence_length=int(cfg.data.sequence_length),
-        sequence_feature_dim=int(cfg.data.sequence_feature_dim),
-        sequence_variable_length=bool(cfg.data.sequence_variable_length),
-        sequence_min_length=int(cfg.data.sequence_min_length),
-        motion_files=tuple(cfg.data.motion_files),
-        motion_file_yaml=str(cfg.data.motion_file_yaml),
-        motion_group=str(cfg.data.motion_group),
-        motion_feature_keys=tuple(cfg.data.motion_feature_keys),
-        motion_as_sequence=bool(cfg.data.motion_as_sequence),
-        motion_frame_stride=int(cfg.data.motion_frame_stride),
-        motion_normalize=bool(cfg.data.motion_normalize),
-        no_batch_protocol=not bool(cfg.data.use_batch_protocol),
+        epochs=int(cfg.train.epochs),
         lr=float(cfg.optim.lr),
         seed=int(cfg.train.seed),
         deterministic=bool(cfg.train.deterministic),
         device=str(cfg.train.device),
-        data_root=str(cfg.data.data_root),
+        motion_files=",".join(cfg.data.motion_files),
+        motion_file_yaml=str(cfg.data.motion_file_yaml),
+        motion_group=str(cfg.data.motion_group),
+        motion_feature_keys=",".join(cfg.data.motion_feature_keys),
+        motion_frame_stride=int(cfg.data.motion_frame_stride),
+        motion_normalize=bool(cfg.data.motion_normalize),
+        val_ratio=float(cfg.data.val_ratio),
         log_root=str(cfg.log.root),
     )
 
 
 def _main_impl(cfg: DictConfig) -> None:
-    """Hydra entrypoint for layered training configuration.
+    """Runs motion training with composed Hydra configuration.
 
     Args:
-        cfg: Composed Hydra config.
+        cfg: Composed Hydra configuration.
     """
     print(OmegaConf.to_yaml(cfg))
     args = _cfg_to_namespace(cfg)
-    set_seed(args.seed, deterministic=args.deterministic)
-    manager = ExperimentManager(args)
-    manager.run()
+    train_main(args)
 
 
 if hydra is not None:
-    main = hydra.main(
-        version_base=None, config_path="../configs", config_name="config"
-    )(_main_impl)
+    main = hydra.main(version_base=None, config_path="../configs", config_name="config")(
+        _main_impl
+    )
 else:
 
     def main() -> None:
-        """Fallback entrypoint when hydra-core is not installed."""
+        """Fallback entrypoint when hydra-core is missing."""
         raise ModuleNotFoundError(
             "hydra-core is required for scripts/train_hydra.py. "
             "Install it via requirements.txt or `pip install hydra-core`."

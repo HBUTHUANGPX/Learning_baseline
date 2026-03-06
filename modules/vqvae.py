@@ -1,4 +1,4 @@
-"""VQ-VAE and FSQ-VAE model definitions."""
+"""Frame-level VQ-VAE and FSQ-VAE models for motion reconstruction."""
 
 from __future__ import annotations
 
@@ -8,143 +8,93 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .configs import VQVAEConfig
-from .conv import VQConvDecoder, VQConvEncoder, flatten_spatial, unflatten_spatial
 from .quantizers import FSQQuantizer, VectorQuantizer
 
 
-class VQVAE(nn.Module):
-    """Vector-Quantized VAE for 28x28 grayscale images."""
+class FrameVQVAE(nn.Module):
+    """Vector-quantized autoencoder for frame vectors ``[B, D]``."""
 
     def __init__(
         self,
-        embedding_dim: int = 16,
-        num_embeddings: int = 128,
+        input_dim: int,
+        embedding_dim: int = 32,
+        hidden_dim: int = 256,
+        num_embeddings: int = 512,
         beta: float = 0.25,
-        recon_loss_mode: str = "auto",
-        config: VQVAEConfig | None = None,
+        recon_loss_mode: str = "mse",
     ) -> None:
-        """Initializes a VQ-VAE model.
+        """Initializes a frame-level VQ-VAE model.
 
         Args:
-            embedding_dim: Channel size of latent feature maps.
-            num_embeddings: Number of codebook vectors.
-            beta: Commitment coefficient for quantization.
-            recon_loss_mode: Reconstruction loss mode in ``{"auto","bce","mse"}``.
-            config: Optional VQVAEConfig. If provided, it overrides architecture
-                and quantization arguments.
+            input_dim: Input frame feature dimension.
+            embedding_dim: Latent embedding dimension before quantization.
+            hidden_dim: Hidden MLP width.
+            num_embeddings: Number of VQ codebook vectors.
+            beta: Commitment loss weight.
+            recon_loss_mode: Reconstruction loss mode, one of
+                ``{"auto", "bce", "mse"}``.
         """
         super().__init__()
-        if config is None:
-            config = VQVAEConfig(
-                embedding_dim=embedding_dim,
-                num_embeddings=num_embeddings,
-                beta=beta,
-                recon_loss_mode=recon_loss_mode,
-            )
-        self.config = config
-        self.embedding_dim = int(config.embedding_dim)
-        self.num_embeddings = int(config.num_embeddings)
-        self.beta = float(config.beta)
-        self.recon_loss_mode = str(config.recon_loss_mode)
+        self.input_dim = int(input_dim)
+        self.embedding_dim = int(embedding_dim)
+        self.recon_loss_mode = str(recon_loss_mode)
 
-        self.encoder = self._build_encoder(self.embedding_dim)
-        self.decoder = self._build_decoder(self.embedding_dim)
-        self.quantizer = self._build_quantizer(
+        self.encoder = nn.Sequential(
+            nn.Linear(self.input_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, self.embedding_dim),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(self.embedding_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, self.input_dim),
+        )
+        self.quantizer = VectorQuantizer(
+            num_embeddings=int(num_embeddings),
             embedding_dim=self.embedding_dim,
-            num_embeddings=self.num_embeddings,
-            beta=self.beta,
-        )
-
-    def _build_encoder(self, embedding_dim: int) -> nn.Module:
-        """Builds encoder module.
-
-        Args:
-            embedding_dim: Channel size of latent feature map.
-
-        Returns:
-            Encoder module instance.
-        """
-        return VQConvEncoder(
-            embedding_dim=embedding_dim,
-            image_shape=(
-                self.config.image.channels,
-                self.config.image.height,
-                self.config.image.width,
-            ),
-            conv_channels=self.config.encoder_channels,
-        )
-
-    def _build_decoder(self, embedding_dim: int) -> nn.Module:
-        """Builds decoder module.
-
-        Args:
-            embedding_dim: Channel size of latent feature map.
-
-        Returns:
-            Decoder module instance.
-        """
-        return VQConvDecoder(
-            embedding_dim=embedding_dim,
-            output_channels=self.config.image.channels,
-            decoder_channels=self.config.decoder_channels,
-        )
-
-    def _build_quantizer(
-        self, embedding_dim: int, num_embeddings: int, beta: float
-    ) -> nn.Module:
-        """Builds quantizer module.
-
-        Args:
-            embedding_dim: Latent embedding dimension.
-            num_embeddings: Number of codebook entries.
-            beta: Commitment coefficient.
-
-        Returns:
-            Quantizer module instance.
-        """
-        return VectorQuantizer(
-            num_embeddings=num_embeddings, embedding_dim=embedding_dim, beta=beta
+            beta=float(beta),
         )
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """Runs forward pass for VQ-VAE.
+        """Runs one forward pass.
 
         Args:
-            x: Input tensor with shape ``[B, 1, 28, 28]``.
+            x: Input tensor with shape ``[B, D]``.
 
         Returns:
-            Dictionary containing reconstruction and quantization stats.
+            Dictionary containing reconstruction and quantization outputs.
         """
-        z_e_map = self.encoder(x)
-        z_e_flat, meta = flatten_spatial(z_e_map)
-        q = self.quantizer(z_e_flat)
-        z_q_map = unflatten_spatial(q["z_q"], meta)
-        x_hat = self.decoder(z_q_map)
+        z_e = self.encoder(x)
+        q = self.quantizer(z_e)
+        x_hat = self.decoder(q["z_q"])
         return {
             "x_hat": x_hat,
-            "z_e": z_e_map,
-            "z_q": z_q_map,
+            "z_e": z_e,
+            "z_q": q["z_q"],
             "indices": q["indices"],
             "quant_loss": q["quant_loss"],
             "perplexity": q["perplexity"],
         }
 
     def loss_function(
-        self, x: torch.Tensor, outputs: Dict[str, torch.Tensor]
+        self,
+        x: torch.Tensor,
+        outputs: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
-        """Computes VQ-VAE loss.
+        """Computes VQ-VAE loss terms.
 
         Args:
-            x: Ground-truth input image batch.
-            outputs: Forward outputs from ``self.forward``.
+            x: Ground-truth frame batch.
+            outputs: Forward outputs from :meth:`forward`.
 
         Returns:
-            Dictionary with scalar loss terms.
+            Dictionary containing total loss and components.
         """
-        recon = self._reconstruction_loss(
-            outputs["x_hat"], x, mode=self.recon_loss_mode
-        )
+        recon = self._reconstruction_loss(outputs["x_hat"], x, self.recon_loss_mode)
         quant = outputs["quant_loss"]
         total = recon + quant
         return {
@@ -156,14 +106,16 @@ class VQVAE(nn.Module):
 
     @staticmethod
     def _reconstruction_loss(
-        x_hat: torch.Tensor, x: torch.Tensor, mode: str = "auto"
+        x_hat: torch.Tensor,
+        x: torch.Tensor,
+        mode: str,
     ) -> torch.Tensor:
-        """Computes VQ reconstruction loss with auto BCE/MSE fallback.
+        """Computes reconstruction loss with optional auto mode.
 
         Args:
             x_hat: Reconstruction tensor.
             x: Ground-truth tensor.
-            mode: One of ``{"auto","bce","mse"}``.
+            mode: Loss mode string.
 
         Returns:
             Batch-averaged reconstruction loss.
@@ -177,60 +129,41 @@ class VQVAE(nn.Module):
                 torch.logical_and(x_hat >= 0.0, x_hat <= 1.0).all().item()
             )
             mode = "bce" if (x_in_range and xhat_in_range) else "mse"
+
         if mode == "bce":
             return F.binary_cross_entropy(x_hat, x, reduction="sum") / x.shape[0]
         return F.mse_loss(x_hat, x, reduction="sum") / x.shape[0]
 
 
-class FSQVAE(VQVAE):
-    """FSQ-VAE using finite scalar quantization instead of vector codebook."""
+class FrameFSQVAE(FrameVQVAE):
+    """Finite-scalar-quantized autoencoder for frame vectors ``[B, D]``."""
 
     def __init__(
         self,
-        embedding_dim: int = 16,
+        input_dim: int,
+        embedding_dim: int = 32,
+        hidden_dim: int = 256,
         fsq_levels: int = 8,
         beta: float = 0.25,
-        recon_loss_mode: str = "auto",
-        config: VQVAEConfig | None = None,
+        recon_loss_mode: str = "mse",
     ) -> None:
-        """Initializes FSQ-VAE.
+        """Initializes a frame-level FSQ-VAE model.
 
         Args:
-            embedding_dim: Channel size of latent feature maps.
-            fsq_levels: Number of scalar bins in FSQ.
-            beta: Commitment coefficient for FSQ.
-            recon_loss_mode: Reconstruction loss mode in ``{"auto","bce","mse"}``.
-            config: Optional VQVAEConfig. If provided, it overrides architecture
-                and FSQ-specific arguments.
+            input_dim: Input frame feature dimension.
+            embedding_dim: Latent embedding dimension before quantization.
+            hidden_dim: Hidden MLP width.
+            fsq_levels: Number of scalar quantization bins.
+            beta: Commitment loss weight.
+            recon_loss_mode: Reconstruction loss mode, one of
+                ``{"auto", "bce", "mse"}``.
         """
-        if config is None:
-            config = VQVAEConfig(
-                embedding_dim=embedding_dim,
-                beta=beta,
-                fsq_levels=fsq_levels,
-                recon_loss_mode=recon_loss_mode,
-            )
-        self.fsq_levels = int(config.fsq_levels)
         super().__init__(
-            embedding_dim=config.embedding_dim,
-            num_embeddings=self.fsq_levels,
-            beta=config.beta,
-            recon_loss_mode=config.recon_loss_mode,
-            config=config,
+            input_dim=input_dim,
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+            num_embeddings=fsq_levels,
+            beta=beta,
+            recon_loss_mode=recon_loss_mode,
         )
-
-    def _build_quantizer(
-        self, embedding_dim: int, num_embeddings: int, beta: float
-    ) -> nn.Module:
-        """Builds FSQ quantizer while keeping parent initialization chain.
-
-        Args:
-            embedding_dim: Latent embedding dimension. Unused for FSQ bins.
-            num_embeddings: Placeholder to keep parent hook signature stable.
-            beta: Commitment coefficient.
-
-        Returns:
-            FSQ quantizer instance.
-        """
-        del embedding_dim, num_embeddings
-        return FSQQuantizer(levels=self.fsq_levels, beta=beta)
+        self.quantizer = FSQQuantizer(levels=int(fsq_levels), beta=float(beta))
