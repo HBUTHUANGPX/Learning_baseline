@@ -1,4 +1,4 @@
-"""Minimal tests for context-aware motion dataloader pipeline."""
+"""Minimal tests for context-conditioned motion dataloader pipeline."""
 
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ def _write_motion_npz(path: Path, length: int = 12, joints: int = 6) -> None:
     )
 
 
-def test_create_motion_dataloaders_current_target() -> None:
-    """Tests dataloader creation with default current-frame targets."""
+def test_create_motion_dataloaders_no_context() -> None:
+    """Tests default no-context dimensions and batch keys."""
     root = Path("/tmp/motion_data_pipeline")
     file_a = root / "a.npz"
     file_b = root / "b.npz"
@@ -41,19 +41,26 @@ def test_create_motion_dataloaders_current_target() -> None:
         motion_files=(str(file_a), str(file_b)),
         motion_feature_keys=("joint_pos", "joint_vel"),
     )
-    train_loader, val_loader, input_dim, target_dim = create_motion_dataloaders(config)
+    (
+        train_loader,
+        val_loader,
+        encoder_input_dim,
+        decoder_condition_dim,
+        target_dim,
+    ) = create_motion_dataloaders(config)
 
-    assert input_dim == 10
+    assert encoder_input_dim == 10
+    assert decoder_condition_dim == 0
     assert target_dim == 10
     batch = next(iter(train_loader))
-    assert batch["input"].ndim == 2
-    assert batch["input"].shape[1] == 10
+    assert batch["encoder_input"].shape[1] == 10
+    assert batch["decoder_condition"].shape[1] == 0
     assert batch["target"].shape[1] == 10
     assert len(train_loader.dataset) + len(val_loader.dataset) == 16
 
 
-def test_context_window_and_all_target_shape() -> None:
-    """Tests context-window indexing and all-frame reconstruction target."""
+def test_context_window_condition_and_target_shape() -> None:
+    """Tests context-conditioned shape contract: enc=h+cur+f, dec_cond=h, target=cur+f."""
     root = Path("/tmp/motion_data_pipeline_context")
     file_a = root / "a.npz"
     _write_motion_npz(file_a, length=12, joints=4)
@@ -65,37 +72,17 @@ def test_context_window_and_all_target_shape() -> None:
         motion_feature_keys=("joint_pos", "joint_vel"),
         history_frames=2,
         future_frames=3,
-        reconstruction_target="all",
     )
-    train_loader, _, input_dim, target_dim = create_motion_dataloaders(config)
-    # frame_dim = 8, window_size = 6 -> flattened dim = 48
-    assert input_dim == 48
-    assert target_dim == 48
+    train_loader, _, enc_dim, cond_dim, target_dim = create_motion_dataloaders(config)
+    # frame_dim = 8
+    # encoder window = 2 + 1 + 3 = 6 -> 48
+    # condition window = 2 -> 16
+    # target window = 1 + 3 = 4 -> 32
+    assert enc_dim == 48
+    assert cond_dim == 16
+    assert target_dim == 32
+
     batch = next(iter(train_loader))
-    assert batch["input"].shape[1] == 48
-    assert batch["target"].shape[1] == 48
-
-
-def test_future_target_shape() -> None:
-    """Tests future-target mode with valid offset in context window."""
-    root = Path("/tmp/motion_data_pipeline_future")
-    file_a = root / "a.npz"
-    _write_motion_npz(file_a, length=12, joints=3)
-
-    config = DataConfig(
-        batch_size=2,
-        val_ratio=0.0,
-        motion_files=(str(file_a),),
-        motion_feature_keys=("joint_pos", "joint_vel"),
-        history_frames=1,
-        future_frames=2,
-        reconstruction_target="future",
-        future_target_offset=2,
-    )
-    train_loader, _, input_dim, target_dim = create_motion_dataloaders(config)
-    # frame_dim = 6, window_size = 4 -> input 24, future target 6
-    assert input_dim == 24
-    assert target_dim == 6
-    batch = next(iter(train_loader))
-    assert batch["input"].shape[1] == 24
-    assert batch["target"].shape[1] == 6
+    assert batch["encoder_input"].shape[1] == 48
+    assert batch["decoder_condition"].shape[1] == 16
+    assert batch["target"].shape[1] == 32

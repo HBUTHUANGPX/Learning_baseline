@@ -14,17 +14,22 @@ This repository is intentionally slimmed down to only keep:
 - `utils/`: seed helper, tensorboard logger, motion-file YAML parser
 - `tests/`: minimal pytest coverage
 
-## Temporal Indexing
+## Context-Conditioned Task
 
-Data indexing supports context windows and flexible reconstruction targets:
+The training task is fixed as:
 
-- input context: `history_frames` + current + `future_frames`
-- reconstruction target modes:
-  - `current`: reconstruct only current frame
-  - `future`: reconstruct one future frame (`future_target_offset`)
-  - `all`: reconstruct the whole context window
+- encoder input: `n` history + current + `m` future
+- decoder input: quantized latent + `n` history
+- reconstruction target: current + `m` future
 
-Hydra overrides example:
+This corresponds to:
+
+- `history_frames = n`
+- `future_frames = m`
+
+## Training
+
+Hydra entrypoint:
 
 ```bash
 python scripts/train_hydra.py \
@@ -32,16 +37,7 @@ python scripts/train_hydra.py \
   data.motion_group=xsens_bvh \
   data.history_frames=4 \
   data.future_frames=2 \
-  data.reconstruction_target=future \
-  data.future_target_offset=2
-```
-
-## Training
-
-Hydra entrypoint:
-
-```bash
-python scripts/train_hydra.py model=fsq data.motion_group=xsens_bvh train.epochs=200
+  train.epochs=200
 ```
 
 CLI entrypoint:
@@ -53,7 +49,6 @@ python scripts/train_motion_vqvae.py \
   --motion-group xsens_bvh \
   --history-frames 4 \
   --future-frames 2 \
-  --reconstruction-target current \
   --epochs 200 \
   --batch-size 1024
 ```

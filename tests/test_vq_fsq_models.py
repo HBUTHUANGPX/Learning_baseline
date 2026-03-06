@@ -1,4 +1,4 @@
-"""Minimal tests for frame-level VQ-VAE and FSQ-VAE models."""
+"""Minimal tests for context-conditioned VQ-VAE and FSQ-VAE models."""
 
 from __future__ import annotations
 
@@ -10,18 +10,21 @@ from modules.vqvae import FrameFSQVAE, FrameVQVAE
 def test_frame_vqvae_forward_and_loss() -> None:
     """Tests FrameVQVAE forward outputs and scalar losses."""
     model = FrameVQVAE(
-        input_dim=20,
-        output_dim=6,
+        encoder_input_dim=20,
+        decoder_condition_dim=6,
+        target_dim=12,
         embedding_dim=8,
         hidden_dim=32,
         num_embeddings=16,
     )
-    x = torch.rand(4, 20)
-    target = torch.rand(4, 6)
-    outputs = model(x)
+    enc = torch.rand(4, 20)
+    cond = torch.rand(4, 6)
+    target = torch.rand(4, 12)
+
+    outputs = model(enc, cond)
     losses = model.loss_function(target, outputs)
 
-    assert outputs["x_hat"].shape == (4, 6)
+    assert outputs["x_hat"].shape == (4, 12)
     assert set(losses.keys()) == {"loss", "recon_loss", "quant_loss", "perplexity"}
     assert losses["loss"].dim() == 0
 
@@ -29,16 +32,20 @@ def test_frame_vqvae_forward_and_loss() -> None:
 def test_frame_fsqvae_forward_and_loss() -> None:
     """Tests FrameFSQVAE forward outputs and scalar losses."""
     model = FrameFSQVAE(
-        input_dim=20,
-        output_dim=20,
+        encoder_input_dim=20,
+        decoder_condition_dim=0,
+        target_dim=10,
         embedding_dim=8,
         hidden_dim=32,
         fsq_levels=6,
     )
-    x = torch.rand(3, 20)
-    outputs = model(x)
-    losses = model.loss_function(x, outputs)
+    enc = torch.rand(3, 20)
+    cond = torch.rand(3, 0)
+    target = torch.rand(3, 10)
 
-    assert outputs["x_hat"].shape == (3, 20)
+    outputs = model(enc, cond)
+    losses = model.loss_function(target, outputs)
+
+    assert outputs["x_hat"].shape == (3, 10)
     assert set(losses.keys()) == {"loss", "recon_loss", "quant_loss", "perplexity"}
     assert losses["loss"].dim() == 0

@@ -1,4 +1,4 @@
-"""Data pipeline for motion VQ/FSQ training with context indexing."""
+"""Data pipeline for motion VQ/FSQ training with context conditioning."""
 
 from __future__ import annotations
 
@@ -27,10 +27,8 @@ class DataConfig:
         motion_feature_keys: Feature keys concatenated into frame vectors.
         motion_frame_stride: Frame stride used during loading.
         motion_normalize: Whether to normalize all frames globally.
-        history_frames: Number of history frames in model input.
-        future_frames: Number of future frames in model input.
-        reconstruction_target: Target mode in ``{"all", "current", "future"}``.
-        future_target_offset: Future-step offset when using ``future`` target mode.
+        history_frames: Number of history frames in context/condition.
+        future_frames: Number of future frames in context/target.
     """
 
     batch_size: int = 256
@@ -44,8 +42,6 @@ class DataConfig:
     motion_normalize: bool = False
     history_frames: int = 0
     future_frames: int = 0
-    reconstruction_target: str = "current"
-    future_target_offset: int = 1
 
 
 def _resolve_motion_files(config: DataConfig) -> tuple[str, ...]:
@@ -85,14 +81,15 @@ def _resolve_motion_files(config: DataConfig) -> tuple[str, ...]:
 
 def create_motion_dataloaders(
     config: DataConfig,
-) -> Tuple[DataLoader, DataLoader, int, int]:
-    """Creates train/validation loaders for context-indexed motion data.
+) -> Tuple[DataLoader, DataLoader, int, int, int]:
+    """Creates train/validation loaders for context-conditioned motion data.
 
     Args:
         config: Data configuration.
 
     Returns:
-        Tuple ``(train_loader, val_loader, input_dim, target_dim)``.
+        Tuple ``(train_loader, val_loader, encoder_input_dim,
+        decoder_condition_dim, target_dim)``.
     """
     motion_files = _resolve_motion_files(config)
     dataset = MotionFrameDataset(
@@ -103,21 +100,14 @@ def create_motion_dataloaders(
             normalize=config.motion_normalize,
             history_frames=config.history_frames,
             future_frames=config.future_frames,
-            reconstruction_target=config.reconstruction_target,
-            future_target_offset=config.future_target_offset,
         )
     )
 
-    # ``dataset`` length equals the number of valid center indices produced by
-    # MotionFrameDataset. Each center already satisfies history/future boundary
-    # constraints inside its own trajectory.
     total = len(dataset)
     val_size = int(total * config.val_ratio)
     train_size = total - val_size
 
     generator = torch.Generator().manual_seed(config.seed)
-    # Random split is applied over valid centers, not over a physically
-    # concatenated global frame timeline.
     permutation = torch.randperm(total, generator=generator).tolist()
 
     if val_size == 0:
@@ -142,4 +132,10 @@ def create_motion_dataloaders(
         shuffle=False,
         drop_last=False,
     )
-    return train_loader, val_loader, dataset.input_dim, dataset.target_dim
+    return (
+        train_loader,
+        val_loader,
+        dataset.encoder_input_dim,
+        dataset.decoder_condition_dim,
+        dataset.target_dim,
+    )

@@ -1,4 +1,4 @@
-"""Frame-level VQ-VAE and FSQ-VAE models for motion reconstruction."""
+"""Frame-level VQ-VAE and FSQ-VAE with decoder history conditioning."""
 
 from __future__ import annotations
 
@@ -12,24 +12,29 @@ from .quantizers import FSQQuantizer, VectorQuantizer
 
 
 class FrameVQVAE(nn.Module):
-    """Vector-quantized autoencoder for vector inputs ``[B, D_in]``."""
+    """Vector-quantized autoencoder with conditional decoder.
+
+    Encoder input is a flattened temporal context window. Decoder receives both
+    quantized latent and flattened history-condition vectors.
+    """
 
     def __init__(
         self,
-        input_dim: int,
-        output_dim: int | None = None,
+        encoder_input_dim: int,
+        decoder_condition_dim: int,
+        target_dim: int,
         embedding_dim: int = 32,
         hidden_dim: int = 256,
         num_embeddings: int = 512,
         beta: float = 0.25,
         recon_loss_mode: str = "mse",
     ) -> None:
-        """Initializes a frame-level VQ-VAE model.
+        """Initializes a conditional frame-level VQ-VAE model.
 
         Args:
-            input_dim: Input feature dimension.
-            output_dim: Reconstruction target dimension. If ``None``, uses
-                ``input_dim``.
+            encoder_input_dim: Encoder input feature dimension.
+            decoder_condition_dim: Decoder condition feature dimension.
+            target_dim: Reconstruction target dimension.
             embedding_dim: Latent embedding dimension before quantization.
             hidden_dim: Hidden MLP width.
             num_embeddings: Number of VQ codebook vectors.
@@ -38,43 +43,53 @@ class FrameVQVAE(nn.Module):
                 ``{"auto", "bce", "mse"}``.
         """
         super().__init__()
-        self.input_dim = int(input_dim)
-        self.output_dim = int(output_dim if output_dim is not None else input_dim)
+        self.encoder_input_dim = int(encoder_input_dim)
+        self.decoder_condition_dim = int(decoder_condition_dim)
+        self.target_dim = int(target_dim)
         self.embedding_dim = int(embedding_dim)
         self.recon_loss_mode = str(recon_loss_mode)
 
         self.encoder = nn.Sequential(
-            nn.Linear(self.input_dim, hidden_dim),
+            nn.Linear(self.encoder_input_dim, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, self.embedding_dim),
         )
+
+        decoder_in_dim = self.embedding_dim + self.decoder_condition_dim
         self.decoder = nn.Sequential(
-            nn.Linear(self.embedding_dim, hidden_dim),
+            nn.Linear(decoder_in_dim, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, self.output_dim),
+            nn.Linear(hidden_dim, self.target_dim),
         )
+
         self.quantizer = VectorQuantizer(
             num_embeddings=int(num_embeddings),
             embedding_dim=self.embedding_dim,
             beta=float(beta),
         )
 
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(
+        self,
+        encoder_input: torch.Tensor,
+        decoder_condition: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
         """Runs one forward pass.
 
         Args:
-            x: Input tensor with shape ``[B, D_in]``.
+            encoder_input: Encoder input tensor with shape ``[B, D_enc]``.
+            decoder_condition: Decoder condition tensor with shape ``[B, D_cond]``.
 
         Returns:
             Dictionary containing reconstruction and quantization outputs.
         """
-        z_e = self.encoder(x)
+        z_e = self.encoder(encoder_input)
         q = self.quantizer(z_e)
-        x_hat = self.decoder(q["z_q"])
+        decoder_input = torch.cat([q["z_q"], decoder_condition], dim=1)
+        x_hat = self.decoder(decoder_input)
         return {
             "x_hat": x_hat,
             "z_e": z_e,
@@ -146,24 +161,25 @@ class FrameVQVAE(nn.Module):
 
 
 class FrameFSQVAE(FrameVQVAE):
-    """Finite-scalar-quantized autoencoder for vector inputs ``[B, D_in]``."""
+    """Finite-scalar-quantized autoencoder with conditional decoder."""
 
     def __init__(
         self,
-        input_dim: int,
-        output_dim: int | None = None,
+        encoder_input_dim: int,
+        decoder_condition_dim: int,
+        target_dim: int,
         embedding_dim: int = 32,
         hidden_dim: int = 256,
         fsq_levels: int = 8,
         beta: float = 0.25,
         recon_loss_mode: str = "mse",
     ) -> None:
-        """Initializes a frame-level FSQ-VAE model.
+        """Initializes a conditional frame-level FSQ-VAE model.
 
         Args:
-            input_dim: Input feature dimension.
-            output_dim: Reconstruction target dimension. If ``None``, uses
-                ``input_dim``.
+            encoder_input_dim: Encoder input feature dimension.
+            decoder_condition_dim: Decoder condition feature dimension.
+            target_dim: Reconstruction target dimension.
             embedding_dim: Latent embedding dimension before quantization.
             hidden_dim: Hidden MLP width.
             fsq_levels: Number of scalar quantization bins.
@@ -172,8 +188,9 @@ class FrameFSQVAE(FrameVQVAE):
                 ``{"auto", "bce", "mse"}``.
         """
         super().__init__(
-            input_dim=input_dim,
-            output_dim=output_dim,
+            encoder_input_dim=encoder_input_dim,
+            decoder_condition_dim=decoder_condition_dim,
+            target_dim=target_dim,
             embedding_dim=embedding_dim,
             hidden_dim=hidden_dim,
             num_embeddings=fsq_levels,

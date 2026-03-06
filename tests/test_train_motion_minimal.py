@@ -1,4 +1,4 @@
-"""Minimal smoke test for context-aware motion VQ/FSQ training loop."""
+"""Minimal smoke tests for context-conditioned motion VQ/FSQ training loop."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _write_motion_npz(path: Path, length: int = 20, joints: int = 6) -> None:
 
 
 def test_train_motion_vqvae_one_epoch(tmp_path: Path) -> None:
-    """Tests one epoch of context-aware FSQ training end-to-end."""
+    """Tests one epoch of context-conditioned FSQ training end-to-end."""
     file_a = tmp_path / "motion.npz"
     _write_motion_npz(file_a)
 
@@ -56,8 +56,6 @@ def test_train_motion_vqvae_one_epoch(tmp_path: Path) -> None:
         motion_normalize=False,
         history_frames=2,
         future_frames=1,
-        reconstruction_target="current",
-        future_target_offset=1,
         val_ratio=0.2,
         log_root=str(tmp_path / "log"),
     )
@@ -67,8 +65,8 @@ def test_train_motion_vqvae_one_epoch(tmp_path: Path) -> None:
     assert len(checkpoints) == 1
 
 
-def test_build_model_supports_different_output_dim() -> None:
-    """Tests model factory supports input-target dimension mismatch."""
+def test_build_model_supports_conditioned_decoder() -> None:
+    """Tests model factory supports conditioned decoder dimensions."""
     args = Namespace(
         model="vq",
         embedding_dim=8,
@@ -78,10 +76,16 @@ def test_build_model_supports_different_output_dim() -> None:
         beta=0.25,
         recon_loss_mode="mse",
     )
-    model = _build_model(args, input_dim=24, output_dim=6)
-    x = torch.rand(2, 24)
-    target = torch.rand(2, 6)
-    outputs = model(x)
+    model = _build_model(
+        args,
+        encoder_input_dim=24,
+        decoder_condition_dim=12,
+        target_dim=18,
+    )
+    enc = torch.rand(2, 24)
+    cond = torch.rand(2, 12)
+    target = torch.rand(2, 18)
+    outputs = model(enc, cond)
     losses = model.loss_function(target, outputs)
-    assert outputs["x_hat"].shape == (2, 6)
+    assert outputs["x_hat"].shape == (2, 18)
     assert losses["loss"].dim() == 0

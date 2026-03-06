@@ -1,4 +1,4 @@
-"""Hydra entrypoint for context-aware motion VQ/FSQ training."""
+"""Hydra entrypoint for context-conditioned motion VQ/FSQ training."""
 
 from __future__ import annotations
 
@@ -53,8 +53,6 @@ def _cfg_to_namespace(cfg: DictConfig) -> SimpleNamespace:
         motion_normalize=bool(cfg.data.motion_normalize),
         history_frames=int(cfg.data.history_frames),
         future_frames=int(cfg.data.future_frames),
-        reconstruction_target=str(cfg.data.reconstruction_target),
-        future_target_offset=int(cfg.data.future_target_offset),
         val_ratio=float(cfg.data.val_ratio),
         log_root=str(cfg.log.root),
     )

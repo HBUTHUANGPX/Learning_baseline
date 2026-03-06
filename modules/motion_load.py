@@ -1,4 +1,4 @@
-"""Motion dataset loading utilities with temporal context indexing."""
+"""Motion dataset loading utilities with context-conditioned targets."""
 
 from __future__ import annotations
 
@@ -35,11 +35,9 @@ class MotionDatasetConfig:
         feature_keys: NPZ keys concatenated into frame features.
         frame_stride: Temporal sampling stride.
         normalize: Whether to z-score normalize all frame features.
-        history_frames: Number of history frames in model input.
-        future_frames: Number of future frames in model input.
-        reconstruction_target: Target mode in ``{"all", "current", "future"}``.
-        future_target_offset: Future-step offset used when target mode is
-            ``"future"``.
+        history_frames: Number of history frames for encoder/decoder condition.
+        future_frames: Number of future frames included in encoder input and
+            target reconstruction.
     """
 
     motion_files: tuple[str, ...]
@@ -48,8 +46,6 @@ class MotionDatasetConfig:
     normalize: bool = False
     history_frames: int = 0
     future_frames: int = 0
-    reconstruction_target: str = "current"
-    future_target_offset: int = 1
 
 
 def resolve_motion_files(motion_files: Sequence[str]) -> list[Path]:
@@ -116,15 +112,16 @@ def load_motion_feature_sequence(
 
 
 class MotionFrameDataset(Dataset):
-    """Frame-level motion dataset with temporal context and flexible targets.
+    """Frame-level dataset with encoder context and decoder history condition.
 
-    Input frame vectors are built from a context window:
-    ``[t-history, ..., t, ..., t+future]``.
+    For each valid center frame ``t`` in one trajectory:
+    - encoder input: ``[t-h, ..., t, ..., t+f]``
+    - decoder condition: ``[t-h, ..., t-1]``
+    - target: ``[t, ..., t+f]``
 
-    Valid centers are constrained so all required context frames exist. This
-    avoids cross-boundary padding artifacts and keeps indexing deterministic.
-    Indexing is always performed inside each individual sequence and never
-    crosses sequence boundaries.
+    All indexing is performed strictly inside each trajectory. Front/back ranges
+    are trimmed by ``history_frames`` and ``future_frames`` to avoid crossing
+    trajectory boundaries.
     """
 
     def __init__(self, config: MotionDatasetConfig) -> None:
@@ -147,10 +144,7 @@ class MotionFrameDataset(Dataset):
         ]
 
         if config.normalize:
-            # NOTE:
-            # ``torch.cat`` is used only to compute global normalization stats.
-            # It does NOT merge trajectories for indexing or sampling. The
-            # training index is still built per sequence below.
+            # ``cat`` is only used for normalization statistics.
             all_frames = torch.cat(self.sequences, dim=0)
             mean = all_frames.mean(dim=0, keepdim=True)
             std = all_frames.std(dim=0, keepdim=True).clamp_min(1e-6)
@@ -158,24 +152,24 @@ class MotionFrameDataset(Dataset):
 
         self.sequence_lengths = [int(sequence.shape[0]) for sequence in self.sequences]
         self.frame_dim = int(self.sequences[0].shape[-1])
-        self.window_size = 1 + int(config.history_frames) + int(config.future_frames)
-        self.input_dim = self.window_size * self.frame_dim
-        self.target_dim = self._compute_target_dim()
 
-        # ``_center_index`` stores (sequence_id, center_frame_id). Because the
-        # sequence id is explicit, each sample window is always extracted from a
-        # single trajectory and cannot leak into neighboring trajectories.
+        self.encoder_window = 1 + int(config.history_frames) + int(config.future_frames)
+        self.target_window = 1 + int(config.future_frames)
+        self.condition_window = int(config.history_frames)
+
+        self.encoder_input_dim = self.encoder_window * self.frame_dim
+        self.decoder_condition_dim = self.condition_window * self.frame_dim
+        self.target_dim = self.target_window * self.frame_dim
+
         self._center_index: list[tuple[int, int]] = []
         min_center = int(config.history_frames)
         for sequence_id, sequence in enumerate(self.sequences):
-            # Front boundary reserve: center >= history_frames.
-            # Back boundary reserve: center <= (len(sequence)-1-future_frames).
             max_center = int(sequence.shape[0]) - 1 - int(config.future_frames)
             if max_center < min_center:
                 continue
             self._center_index.extend(
-                (sequence_id, frame_id)
-                for frame_id in range(min_center, max_center + 1)
+                (sequence_id, center_id)
+                for center_id in range(min_center, max_center + 1)
             )
 
         if not self._center_index:
@@ -185,67 +179,52 @@ class MotionFrameDataset(Dataset):
             )
 
     def _validate_temporal_config(self) -> None:
-        """Validates temporal indexing and target-mode settings."""
+        """Validates temporal indexing settings."""
         if self.config.history_frames < 0 or self.config.future_frames < 0:
             raise ValueError("history_frames and future_frames must be >= 0.")
-        target_mode = self.config.reconstruction_target.lower().strip()
-        if target_mode not in {"all", "current", "future"}:
-            raise ValueError(
-                "reconstruction_target must be one of {'all', 'current', 'future'}."
-            )
-        if target_mode == "future":
-            if self.config.future_frames <= 0:
-                raise ValueError(
-                    "future target requires future_frames > 0 in input context."
-                )
-            if not (1 <= self.config.future_target_offset <= self.config.future_frames):
-                raise ValueError(
-                    "future_target_offset must be within [1, future_frames]."
-                )
-
-    def _compute_target_dim(self) -> int:
-        """Computes flattened target dimension from reconstruction mode."""
-        mode = self.config.reconstruction_target.lower().strip()
-        if mode == "all":
-            return self.window_size * self.frame_dim
-        return self.frame_dim
 
     def __len__(self) -> int:
         """Returns total number of valid center frames."""
         return len(self._center_index)
 
     def __getitem__(self, index: int) -> MutableMapping[str, torch.Tensor]:
-        """Fetches one context-input and reconstruction-target sample.
+        """Fetches one context-conditioned training sample.
 
         Args:
             index: Sample index over valid center frames.
 
         Returns:
-            Dictionary with flattened model input and target tensors.
+            Dictionary with encoder input, decoder condition, and target vectors.
         """
         sequence_id, center_id = self._center_index[index]
         sequence = self.sequences[sequence_id]
 
-        # Window slicing is performed on the selected sequence only.
-        start = center_id - int(self.config.history_frames)
-        end = center_id + int(self.config.future_frames) + 1
-        window = sequence[start:end]  # [W, D]
-        input_vector = window.reshape(-1)
+        history = int(self.config.history_frames)
+        future = int(self.config.future_frames)
 
-        target_mode = self.config.reconstruction_target.lower().strip()
-        if target_mode == "all":
-            target_vector = window.reshape(-1)
-        elif target_mode == "current":
-            target_vector = sequence[center_id]
-        else:
-            target_index = center_id + int(self.config.future_target_offset)
-            target_vector = sequence[target_index]
+        enc_start = center_id - history
+        enc_end = center_id + future + 1
+        encoder_window = sequence[enc_start:enc_end]
+
+        cond_start = center_id - history
+        cond_end = center_id
+        condition_window = sequence[cond_start:cond_end]
+
+        target_start = center_id
+        target_end = center_id + future + 1
+        target_window = sequence[target_start:target_end]
+
+        encoder_input = encoder_window.reshape(-1)
+        decoder_condition = condition_window.reshape(-1)
+        target = target_window.reshape(-1)
 
         return {
-            "input": input_vector,
-            "target": target_vector,
-            # Backward-compatible alias for legacy debug scripts.
-            "state": input_vector,
+            "encoder_input": encoder_input,
+            "decoder_condition": decoder_condition,
+            "target": target,
+            # Aliases kept for simple backward compatibility.
+            "input": encoder_input,
+            "state": encoder_input,
             "motion_id": torch.tensor(sequence_id, dtype=torch.long),
             "frame_id": torch.tensor(center_id, dtype=torch.long),
         }

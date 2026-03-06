@@ -1,4 +1,4 @@
-"""Training entrypoint for context-aware motion VQ-VAE and FSQ-VAE."""
+"""Training entrypoint for context-conditioned motion VQ-VAE and FSQ-VAE."""
 
 from __future__ import annotations
 
@@ -26,7 +26,9 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed argument namespace.
     """
-    parser = argparse.ArgumentParser(description="Train context-aware motion VQ/FSQ.")
+    parser = argparse.ArgumentParser(
+        description="Train context-conditioned motion VQ/FSQ."
+    )
     parser.add_argument("--model", choices=["vq", "fsq"], default="fsq")
     parser.add_argument("--embedding-dim", type=int, default=32)
     parser.add_argument("--hidden-dim", type=int, default=256)
@@ -52,12 +54,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--motion-normalize", action="store_true")
     parser.add_argument("--history-frames", type=int, default=0)
     parser.add_argument("--future-frames", type=int, default=0)
-    parser.add_argument(
-        "--reconstruction-target",
-        choices=["all", "current", "future"],
-        default="current",
-    )
-    parser.add_argument("--future-target-offset", type=int, default=1)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--log-root", type=str, default="./log")
     return parser.parse_args()
@@ -95,23 +91,26 @@ def _select_device(raw: str) -> torch.device:
 
 def _build_model(
     args: argparse.Namespace,
-    input_dim: int,
-    output_dim: int,
+    encoder_input_dim: int,
+    decoder_condition_dim: int,
+    target_dim: int,
 ) -> torch.nn.Module:
     """Builds VQ or FSQ model from training arguments.
 
     Args:
         args: Training argument namespace.
-        input_dim: Input feature dimension inferred from dataset.
-        output_dim: Reconstruction target dimension inferred from dataset.
+        encoder_input_dim: Encoder input dimension inferred from dataset.
+        decoder_condition_dim: Decoder condition dimension inferred from dataset.
+        target_dim: Reconstruction target dimension inferred from dataset.
 
     Returns:
         Constructed model instance.
     """
     if args.model == "vq":
         return FrameVQVAE(
-            input_dim=input_dim,
-            output_dim=output_dim,
+            encoder_input_dim=encoder_input_dim,
+            decoder_condition_dim=decoder_condition_dim,
+            target_dim=target_dim,
             embedding_dim=args.embedding_dim,
             hidden_dim=args.hidden_dim,
             num_embeddings=args.num_embeddings,
@@ -119,8 +118,9 @@ def _build_model(
             recon_loss_mode=args.recon_loss_mode,
         )
     return FrameFSQVAE(
-        input_dim=input_dim,
-        output_dim=output_dim,
+        encoder_input_dim=encoder_input_dim,
+        decoder_condition_dim=decoder_condition_dim,
+        target_dim=target_dim,
         embedding_dim=args.embedding_dim,
         hidden_dim=args.hidden_dim,
         fsq_levels=args.fsq_levels,
@@ -159,9 +159,11 @@ def _run_epoch(
 
     progress = tqdm(loader, desc="Train" if is_train else "Val", leave=False)
     for batch in progress:
-        x = batch["input"].to(device)
+        encoder_input = batch["encoder_input"].to(device)
+        decoder_condition = batch["decoder_condition"].to(device)
         target = batch["target"].to(device)
-        outputs = model(x)
+
+        outputs = model(encoder_input, decoder_condition)
         losses = model.loss_function(target, outputs)
 
         if is_train:
@@ -169,7 +171,7 @@ def _run_epoch(
             losses["loss"].backward()
             optimizer.step()
 
-        batch_size = int(x.shape[0])
+        batch_size = int(encoder_input.shape[0])
         sample_count += batch_size
         for key in metric_sum:
             metric_sum[key] += float(losses[key].detach().cpu()) * batch_size
@@ -205,12 +207,21 @@ def main(args: argparse.Namespace | None = None) -> None:
         motion_normalize=args.motion_normalize,
         history_frames=args.history_frames,
         future_frames=args.future_frames,
-        reconstruction_target=args.reconstruction_target,
-        future_target_offset=args.future_target_offset,
     )
-    train_loader, val_loader, input_dim, target_dim = create_motion_dataloaders(data_config)
+    (
+        train_loader,
+        val_loader,
+        encoder_input_dim,
+        decoder_condition_dim,
+        target_dim,
+    ) = create_motion_dataloaders(data_config)
 
-    model = _build_model(args, input_dim=input_dim, output_dim=target_dim).to(device)
+    model = _build_model(
+        args,
+        encoder_input_dim=encoder_input_dim,
+        decoder_condition_dim=decoder_condition_dim,
+        target_dim=target_dim,
+    ).to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(1, args.epochs + 1):
@@ -227,7 +238,8 @@ def main(args: argparse.Namespace | None = None) -> None:
                 "args": vars(args),
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
-                "input_dim": input_dim,
+                "encoder_input_dim": encoder_input_dim,
+                "decoder_condition_dim": decoder_condition_dim,
                 "target_dim": target_dim,
             },
             checkpoint_path,
