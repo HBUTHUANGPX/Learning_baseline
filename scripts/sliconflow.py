@@ -14,13 +14,13 @@ from openai import OpenAI
 DEFAULT_INPUT = "data/Q1/100STYLE/NPZ_Style_Movement_Metadata.csv"
 DEFAULT_OUTPUT = "tmp/NPZ_Style_Movement_Metadata_with_clip_text.csv"
 DEFAULT_CACHE = "tmp/NPZ_Style_Movement_prompt_cache.csv"
-DEFAULT_MODEL = "Qwen/Qwen3.5-27B"
+# DEFAULT_MODEL = "Qwen/Qwen3.5-27B"
+DEFAULT_MODEL = "Pro/deepseek-ai/DeepSeek-V3.2"
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 
 # Keep backward compatibility with the previous script behavior.
 DEFAULT_API_KEY = "sk-ftylzstkkpxtxvwribwvcbsadlfuadgayetxfuvlnbsrcikj"
 
-PROMPT_TEMPLATE_VERSION = "v1"
 SYSTEM_PROMPT = (
     "You are an expert in motion captioning for CLIP embedding. "
     "Given two independent descriptions from a motion capture dataset:\n"
@@ -150,7 +150,6 @@ def main() -> None:
     cache = load_cache(cache_path)
 
     output_rows: list[dict[str, str]] = []
-    failure_count = 0
 
     for idx, row in enumerate(rows, start=1):
         style_description = (row.get("style_description") or "").strip()
@@ -158,49 +157,36 @@ def main() -> None:
         pair_key = make_key(style_description, movement_label)
 
         prompt = cache.get(pair_key, "")
-        status = "ok"
-        error_message = ""
         if not prompt:
-            try:
-                prompt = request_caption(
-                    client=client,
-                    model=args.model,
-                    style_description=style_description,
-                    movement_label=movement_label,
-                    temperature=args.temperature,
-                    max_tokens=args.max_tokens,
-                    retries=args.retries,
-                    retry_wait=args.retry_wait,
-                )
-                cache[pair_key] = prompt
-                save_cache(cache_path, cache)
-            except Exception as exc:  # noqa: BLE001
-                status = "failed"
-                error_message = str(exc)
-                failure_count += 1
+            prompt = request_caption(
+                client=client,
+                model=args.model,
+                style_description=style_description,
+                movement_label=movement_label,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                retries=args.retries,
+                retry_wait=args.retry_wait,
+            )
+            cache[pair_key] = prompt
+            save_cache(cache_path, cache)
 
         out = dict(row)
         out["clip_text_prompt"] = prompt
         out["llm_model"] = args.model
-        out["prompt_template_version"] = PROMPT_TEMPLATE_VERSION
-        out["status"] = status
-        out["error_message"] = error_message
         output_rows.append(out)
 
         if idx % 20 == 0 or idx == len(rows):
-            print(f"[{idx}/{len(rows)}] processed, failures={failure_count}")
+            print(f"[{idx}/{len(rows)}] processed")
 
     fieldnames = list(rows[0].keys()) + [
         "clip_text_prompt",
         "llm_model",
-        "prompt_template_version",
-        "status",
-        "error_message",
     ]
     write_csv_rows(output_path, output_rows, fieldnames)
     print(f"Done. output={output_path}")
     print(f"Done. cache={cache_path}")
-    print(f"total_rows={len(output_rows)}, failures={failure_count}")
+    print(f"total_rows={len(output_rows)}")
 
 
 if __name__ == "__main__":
