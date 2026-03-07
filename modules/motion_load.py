@@ -251,7 +251,7 @@ class MotionFrameDataset(Dataset):
                         self._npz_keys.append("root_xy_pos")
                         setattr(self, "root_xy_pos", [])
 
-                _tensor = torch.as_tensor(data[key], dtype=torch.float32).to(self.cache_device)
+                _tensor = torch.as_tensor(data[key], dtype=torch.float32)
                 getattr(self, key).append(_tensor)
                 if key == "body_quat_w":
                     root_quat_w = _tensor[:, self.motion_reference_body_names_in_isaacsim_index, :]
@@ -310,7 +310,7 @@ class MotionFrameDataset(Dataset):
 
             lengths = [int(tensor.shape[0]) for tensor in sequence_tensors]
                 
-            setattr(self, key, torch.cat(sequence_tensors, dim=0).contiguous())
+            setattr(self, key, torch.cat(sequence_tensors, dim=0).to(self.cache_device).contiguous())
             self._member_sequence_lengths[key] = lengths
             self._member_sequence_start[key] = self._build_sequence_start_tensor(lengths)
 
