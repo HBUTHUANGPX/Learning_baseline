@@ -140,17 +140,17 @@ class MotionFrameDataset(Dataset):
 
         self.paths = resolve_motion_files(config.motion_files)
 
-        # Every key discovered in NPZ files is attached as ``self.<key>`` and
-        # stores a per-trajectory list of raw tensors.
+        # NPZ keys are first loaded as ``list[Tensor]`` then finalized to Tensor.
         self._npz_keys: list[str] = []
-        self._npz_member_cat: dict[str, torch.Tensor] = {}
+        self._member_sequence_lengths: dict[str, list[int]] = {}
+        self._member_sequence_start: dict[str, torch.Tensor] = {}
         self._sequence_feature_tensors: list[torch.Tensor] = []
 
+        self._prepare_feature_members()
         for path in self.paths:
             self._read_npz_to_member_lists(path)
 
         self._finalize_npz_member_cache()
-        self._prepare_feature_members()
         self._sequence_feature_tensors = self._build_sequence_feature_tensors()
 
         if not self._sequence_feature_tensors:
@@ -215,38 +215,95 @@ class MotionFrameDataset(Dataset):
                 if key not in self._npz_keys:
                     self._npz_keys.append(key)
                     setattr(self, key, [])
-                getattr(self, key).append(torch.as_tensor(data[key], dtype=torch.float32))
+                    if key == "body_quat_w":
+                        self._npz_keys.append("root_quat_w")
+                        setattr(self, "root_quat_w", [])
+                        self._npz_keys.append("root_euler_w")
+                        setattr(self, "root_euler_w", [])
+                        self._npz_keys.append("continuous_trigonometric_encoding")
+                        setattr(self, "continuous_trigonometric_encoding", [])
+                        self._npz_keys.append("delta_yaw")
+                        setattr(self, "delta_yaw", [])
+                    if key == "joint_pos":
+                        self._npz_keys.append("delta_joint_pos")
+                        setattr(self, "delta_joint_pos", [])
+                    if key == "body_pos_w":
+                        self._npz_keys.append("root_pos_w")
+                        setattr(self, "root_pos_w", [])
+                        self._npz_keys.append("root_height")
+                        setattr(self, "root_height", [])
+                        self._npz_keys.append("root_xy_pos")
+                        setattr(self, "root_xy_pos", [])
+
+                _tensor = torch.as_tensor(data[key], dtype=torch.float32)
+                getattr(self, key).append(_tensor)
+                if key == "body_quat_w":
+                    root_quat_w = _tensor[:, self.motion_reference_body_names_in_isaacsim_index, :]
+                    root_euler_w = torch.stack(euler_xyz_from_quat(root_quat_w),dim=-1)
+                    continuous_trigonometric_encoding = torch.cat(
+                        [
+                            torch.sin(root_euler_w[:, 0:1]),
+                            torch.cos(root_euler_w[:, 0:1]) - 1,
+                            torch.sin(root_euler_w[:, 1:2]),
+                            torch.cos(root_euler_w[:, 1:2]) - 1,
+                        ],
+                        dim=1,
+                    )
+                    # ∆ψt = yawt+1 − yawt denotes the incremental change of the root yaw
+                    diffs = torch.diff(root_euler_w[:, 2:3], dim=0)  # 相邻差分，形状 (N-1, 1)
+                    delta_yaw = torch.cat([diffs[0:1], diffs], dim=0)
+                    getattr(self, "root_quat_w").append(root_quat_w)
+                    getattr(self, "root_euler_w").append(root_euler_w)
+                    getattr(self, "continuous_trigonometric_encoding").append(continuous_trigonometric_encoding)
+                    getattr(self, "delta_yaw").append(delta_yaw)
+                if key == "joint_pos":
+                    diffs = torch.diff(_tensor,dim=0)
+                    delta_joint_pos = torch.cat([diffs[0:1], diffs], dim=0)
+                    getattr(self, "delta_joint_pos").append(delta_joint_pos)
+                if key == "body_pos_w":
+                    root_pos_w = _tensor[:, self.motion_reference_body_names_in_isaacsim_index, :]
+                    root_height = root_pos_w[:, 2:3]
+                    root_xy_pos = root_pos_w[:, 0:2]-root_pos_w[0:1, 0:2]
+                    getattr(self, "root_pos_w").append(root_pos_w)
+                    getattr(self, "root_height").append(root_height)
+                    getattr(self, "root_xy_pos").append(root_xy_pos)
 
     def _finalize_npz_member_cache(self) -> None:
-        """Builds concatenated per-key cache tensors after all NPZ are loaded.
-
-        The original list members (``self.<key>``) are preserved for explicit
-        per-sequence indexing. The concatenated cache is exposed via
-        ``self._npz_member_cat[key]`` for faster global access when needed.
-        """
+        """Finalizes NPZ member lists into tensor members."""
         for key in self._npz_keys:
             sequence_tensors: list[torch.Tensor] = getattr(self, key)
             if not sequence_tensors:
                 continue
 
-            # Scalars cannot be flattened as temporal tensors; stack them by file.
             if all(tensor.ndim == 0 for tensor in sequence_tensors):
-                self._npz_member_cat[key] = torch.stack(sequence_tensors, dim=0).contiguous()
+                setattr(self, key, torch.stack(sequence_tensors, dim=0).contiguous())
+                lengths = [1] * len(sequence_tensors)
+                self._member_sequence_lengths[key] = lengths
+                self._member_sequence_start[key] = self._build_sequence_start_tensor(lengths)
                 continue
 
             base_shape = sequence_tensors[0].shape[1:]
             can_cat = all(
                 tensor.ndim >= 1 and tensor.shape[1:] == base_shape for tensor in sequence_tensors
             )
-            if can_cat:
-                self._npz_member_cat[key] = torch.cat(sequence_tensors, dim=0).contiguous()
+            if not can_cat:
+                raise ValueError(
+                    f"Inconsistent NPZ key '{key}' shapes across files: "
+                    f"{[tuple(t.shape) for t in sequence_tensors]}"
+                )
+
+            lengths = [int(tensor.shape[0]) for tensor in sequence_tensors]
+                
+            setattr(self, key, torch.cat(sequence_tensors, dim=0).contiguous())
+            self._member_sequence_lengths[key] = lengths
+            self._member_sequence_start[key] = self._build_sequence_start_tensor(lengths)
 
     def _prepare_feature_members(self) -> None:
         """Hook for user-defined member preprocessing before feature building.
 
         ``config.feature_keys`` can reference either:
         1. raw NPZ keys already exposed as ``self.<key>``, or
-        2. new members built here, e.g. ``self.my_feature`` as list[Tensor].
+        2. new members built here.
         """
         # Reserved for custom feature construction from raw members.
         # Example:
@@ -275,26 +332,6 @@ class MotionFrameDataset(Dataset):
             isaac_sim_link_name.index(name) for name in motion_body_names
         ]
         self.motion_reference_body_names_in_isaacsim_index = motion_body_names.index(motion_reference_body)
-        self.root_pos_w = self._npz_member_cat["body_pos_w"][:,self.motion_reference_body_names_in_isaacsim_index,:]
-        self.root_quat_w = self._npz_member_cat["body_quat_w"][:,self.motion_reference_body_names_in_isaacsim_index,:]
-        self.root_euler_w = torch.stack(euler_xyz_from_quat(self.root_quat_w),dim=-1)
-        # ϕ(rt) = [sin(rollt), cos(rollt) − 1, sin(pitcht), cos(pitcht) − 1] 
-        self.continuous_trigonometric_encoding = torch.cat(
-            [
-                torch.sin(self.root_euler_w[:, 0:1]),
-                torch.cos(self.root_euler_w[:, 0:1]) - 1,
-                torch.sin(self.root_euler_w[:, 1:2]),
-                torch.cos(self.root_euler_w[:, 1:2]) - 1,
-            ],
-            dim=1,
-        )
-        # TODO： delta部分应该是在单一轨迹层面进行计算的，当前实现是全局层面进行的，可能会引入跨轨迹的错误增量
-        # ∆ψt = yawt+1 − yawt denotes the incremental change of the root yaw
-        diffs = torch.diff(self.root_euler_w[:, 2:3], dim=0)                                       # 相邻差分，形状 (N-1, 1)
-        self.delta_yaw = torch.cat([diffs[0:1], diffs], dim=0)
-
-        # ∆qt = qt+1 − qt the corresponding joint-wise increments
-        self.delta_joint_pos = torch.diff(self._npz_member_cat["joint_pos"], dim=0, prepend=self._npz_member_cat["joint_pos"][0:1])
         return
 
     def _build_sequence_feature_tensors(self) -> list[torch.Tensor]:
@@ -323,22 +360,65 @@ class MotionFrameDataset(Dataset):
         return sequence_features
 
     def _get_member_sequence_tensor(self, key: str, sequence_id: int) -> torch.Tensor:
-        """Returns one sequence tensor from a member list, validating shape."""
+        """Returns one sequence tensor from a tensorized member."""
         if not hasattr(self, key):
             raise KeyError(
                 f"Feature key '{key}' is not available as dataset member. "
                 "If this is a derived feature, create self.<key> in "
                 "_prepare_feature_members()."
             )
-        tensors = getattr(self, key)
-        if not isinstance(tensors, list):
-            raise TypeError(f"Dataset member '{key}' must be list[Tensor], got {type(tensors)}.")
-        if sequence_id >= len(tensors):
+        self._ensure_member_tensorized(key)
+        lengths = self._member_sequence_lengths.get(key)
+        starts = self._member_sequence_start.get(key)
+        if lengths is None or starts is None:
+            raise KeyError(
+                f"Feature key '{key}' is missing sequence slicing metadata. "
+                "For derived members, set _member_sequence_lengths and _member_sequence_start "
+                "in _prepare_feature_members()."
+            )
+        if sequence_id >= len(lengths):
             raise IndexError(
-                f"Feature member '{key}' has {len(tensors)} sequences, "
+                f"Feature member '{key}' has {len(lengths)} sequences, "
                 f"but sequence index {sequence_id} was requested."
             )
-        return torch.as_tensor(tensors[sequence_id], dtype=torch.float32)
+        seq_start = int(starts[sequence_id].item())
+        seq_end = seq_start + int(lengths[sequence_id])
+        return getattr(self, key)[seq_start:seq_end]
+
+    def _ensure_member_tensorized(self, key: str) -> None:
+        """Converts list[Tensor] member to a concatenated tensor in-place."""
+        member = getattr(self, key)
+        if isinstance(member, torch.Tensor):
+            return
+        if not isinstance(member, list):
+            raise TypeError(f"Dataset member '{key}' must be Tensor or list[Tensor], got {type(member)}.")
+        if not member:
+            raise ValueError(f"Dataset member '{key}' is empty.")
+
+        if all(tensor.ndim == 0 for tensor in member):
+            lengths = [1] * len(member)
+            tensorized = torch.stack(member, dim=0).contiguous()
+        else:
+            base_shape = member[0].shape[1:]
+            can_cat = all(tensor.ndim >= 1 and tensor.shape[1:] == base_shape for tensor in member)
+            if not can_cat:
+                raise ValueError(
+                    f"Cannot concatenate feature member '{key}' with shapes: "
+                    f"{[tuple(t.shape) for t in member]}"
+                )
+            lengths = [int(tensor.shape[0]) for tensor in member]
+            tensorized = torch.cat(member, dim=0).contiguous()
+
+        setattr(self, key, tensorized)
+        self._member_sequence_lengths[key] = lengths
+        self._member_sequence_start[key] = self._build_sequence_start_tensor(lengths)
+
+    def _build_sequence_start_tensor(self, lengths: list[int]) -> torch.Tensor:
+        """Builds per-sequence start offsets from sequence lengths."""
+        start = torch.zeros(len(lengths), dtype=torch.long)
+        if len(lengths) > 1:
+            start[1:] = torch.cumsum(torch.tensor(lengths[:-1], dtype=torch.long), dim=0)
+        return start
 
     def _build_center_index_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Builds tensorized center index arrays.
