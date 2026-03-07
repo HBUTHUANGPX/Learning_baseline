@@ -3,14 +3,62 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
+from math import ceil
+from typing import Iterator, MutableMapping, Tuple
 
 import torch
-from torch.utils.data import DataLoader, Subset
 
 from utils.load_motion_file import collect_npz_paths
 
 from .motion_load import MotionDatasetConfig, MotionFrameDataset
+
+
+class TensorIndexSubset:
+    """Minimal subset view used by TensorBatchLoader."""
+
+    def __init__(self, dataset: MotionFrameDataset, indices: torch.Tensor) -> None:
+        self.dataset = dataset
+        self.indices = indices
+
+    def __len__(self) -> int:
+        return int(self.indices.numel())
+
+
+class TensorBatchLoader:
+    """Batch loader with prebuilt tensor indices and vectorized dataset lookup."""
+
+    def __init__(
+        self,
+        dataset: MotionFrameDataset,
+        indices: torch.Tensor,
+        batch_size: int,
+        shuffle: bool,
+        seed: int,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0.")
+        self.dataset = TensorIndexSubset(dataset, indices.to(dtype=torch.long))
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self._epoch = 0
+
+    def __len__(self) -> int:
+        total = len(self.dataset)
+        return int(ceil(total / self.batch_size)) if total > 0 else 0
+
+    def __iter__(self) -> Iterator[MutableMapping[str, torch.Tensor]]:
+        indices = self.dataset.indices
+        if self.shuffle and indices.numel() > 1:
+            generator = torch.Generator().manual_seed(self.seed + self._epoch)
+            order = indices[torch.randperm(indices.numel(), generator=generator)]
+        else:
+            order = indices
+        self._epoch += 1
+
+        for start in range(0, int(order.numel()), self.batch_size):
+            batch_indices = order[start : start + self.batch_size]
+            yield self.dataset.dataset.get_batch(batch_indices)
 
 
 @dataclass(frozen=True)
@@ -84,7 +132,7 @@ def _resolve_motion_files(config: DataConfig) -> tuple[str, ...]:
 
 def create_motion_dataloaders(
     config: DataConfig,
-) -> Tuple[DataLoader, DataLoader, int, int, int]:
+) -> Tuple[TensorBatchLoader, TensorBatchLoader, int, int, int]:
     """Creates train/validation loaders for context-conditioned motion data.
 
     Args:
@@ -112,32 +160,31 @@ def create_motion_dataloaders(
     train_size = total - val_size
 
     generator = torch.Generator().manual_seed(config.seed)
-    permutation = torch.randperm(total, generator=generator).tolist()
+    permutation = torch.randperm(total, generator=generator, dtype=torch.long)
 
     if val_size == 0:
-        train_set = Subset(dataset, permutation)
-        val_set = Subset(dataset, [])
+        train_indices = permutation
+        val_indices = torch.zeros(0, dtype=torch.long)
     elif train_size == 0:
-        train_set = Subset(dataset, [])
-        val_set = Subset(dataset, permutation)
+        train_indices = torch.zeros(0, dtype=torch.long)
+        val_indices = permutation
     else:
-        train_set = Subset(dataset, permutation[:train_size])
-        val_set = Subset(dataset, permutation[train_size:])
+        train_indices = permutation[:train_size]
+        val_indices = permutation[train_size:]
 
-    pin_memory = dataset.cache_device.type == "cpu" and torch.cuda.is_available()
-    train_loader = DataLoader(
-        train_set,
+    train_loader = TensorBatchLoader(
+        dataset=dataset,
+        indices=train_indices,
         batch_size=config.batch_size,
         shuffle=True,
-        pin_memory=pin_memory,
-        drop_last=False,
+        seed=config.seed,
     )
-    val_loader = DataLoader(
-        val_set,
+    val_loader = TensorBatchLoader(
+        dataset=dataset,
+        indices=val_indices,
         batch_size=config.batch_size,
         shuffle=False,
-        pin_memory=pin_memory,
-        drop_last=False,
+        seed=config.seed + 10_000,
     )
     return (
         train_loader,

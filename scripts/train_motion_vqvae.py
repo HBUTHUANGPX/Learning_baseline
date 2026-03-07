@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable, Mapping
 
 import torch
 from torch.optim import Adam
@@ -137,7 +137,7 @@ def _build_model(
 
 def _run_epoch(
     model: torch.nn.Module,
-    loader: torch.utils.data.DataLoader,
+    loader: Iterable[Mapping[str, torch.Tensor]],
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
 ) -> Dict[str, float]:

@@ -171,13 +171,13 @@ class MotionFrameDataset(Dataset):
         # Tensorized sequence storage.
         sequence_lengths = torch.tensor(
             [int(sequence.shape[0]) for sequence in self._sequence_feature_tensors],
-            dtype=torch.long,
+            dtype=torch.long,device=self.cache_device,
         )
         self.sequence_lengths = [int(v) for v in sequence_lengths.tolist()]
         self.num_sequences = int(sequence_lengths.numel())
         self.frame_dim = int(self._sequence_feature_tensors[0].shape[-1])
 
-        self.sequence_start = torch.zeros(self.num_sequences, dtype=torch.long)
+        self.sequence_start = torch.zeros(self.num_sequences, dtype=torch.long, device=self.cache_device)
         if self.num_sequences > 1:
             self.sequence_start[1:] = torch.cumsum(sequence_lengths[:-1], dim=0)
         self.sequence_lengths_tensor = sequence_lengths
@@ -199,6 +199,24 @@ class MotionFrameDataset(Dataset):
                 "No valid frame centers found. Reduce history/future frames "
                 "or use longer motion sequences."
             )
+        self._encoder_offsets = torch.arange(
+            -self.history_frames,
+            self.future_frames + 1,
+            dtype=torch.long,
+            device=self.sequence_bank.device,
+        )
+        self._condition_offsets = torch.arange(
+            -self.history_frames,
+            0,
+            dtype=torch.long,
+            device=self.sequence_bank.device,
+        )
+        self._target_offsets = torch.arange(
+            0,
+            self.future_frames + 1,
+            dtype=torch.long,
+            device=self.sequence_bank.device,
+        )
 
     def _validate_temporal_config(self) -> None:
         """Validates temporal indexing settings."""
@@ -459,7 +477,7 @@ class MotionFrameDataset(Dataset):
         if not center_seq_list:
             return torch.zeros(0, dtype=torch.long), torch.zeros(0, dtype=torch.long)
 
-        return torch.cat(center_seq_list, dim=0), torch.cat(center_local_list, dim=0)
+        return torch.cat(center_seq_list, dim=0).to(self.cache_device), torch.cat(center_local_list, dim=0).to(self.cache_device)
 
     def __len__(self) -> int:
         """Returns total number of valid center frames."""
@@ -474,36 +492,54 @@ class MotionFrameDataset(Dataset):
         Returns:
             Dictionary with encoder input, decoder condition, and target vectors.
         """
-        sequence_id = int(self.center_seq_ids[index].item())
-        center_id = int(self.center_local_ids[index].item())
-        seq_start = int(self.sequence_start[sequence_id].item())
+        batch = self.get_batch(torch.tensor([index], dtype=torch.long, device=self.center_seq_ids.device))
+        return {
+            "encoder_input": batch["encoder_input"][0],
+            "decoder_condition": batch["decoder_condition"][0],
+            "target": batch["target"][0],
+            "input": batch["input"][0],
+            "state": batch["state"][0],
+            "motion_id": batch["motion_id"][0],
+            "frame_id": batch["frame_id"][0],
+        }
 
-        history = self.history_frames
-        future = self.future_frames
+    def get_batch(self, batch_indices: torch.Tensor) -> MutableMapping[str, torch.Tensor]:
+        """Builds one batch with tensorized window indexing.
 
-        enc_start = seq_start + center_id - history
-        enc_end = seq_start + center_id + future + 1
-        encoder_window = self.sequence_bank[enc_start:enc_end]
+        Args:
+            batch_indices: 1D tensor of sample indices over valid center frames.
 
-        cond_start = seq_start + center_id - history
-        cond_end = seq_start + center_id
-        condition_window = self.sequence_bank[cond_start:cond_end]
+        Returns:
+            Dictionary with batched encoder input, decoder condition, and target.
+        """
+        if batch_indices.ndim != 1:
+            raise ValueError("batch_indices must be a 1D tensor.")
+        sample_ids = batch_indices.to(device=self.center_seq_ids.device, dtype=torch.long)
+        sequence_ids = self.center_seq_ids[sample_ids]
+        center_ids = self.center_local_ids[sample_ids]
+        base_positions = self.sequence_start[sequence_ids] + center_ids
 
-        target_start = seq_start + center_id
-        target_end = seq_start + center_id + future + 1
-        target_window = self.sequence_bank[target_start:target_end]
+        encoder_index = base_positions[:, None] + self._encoder_offsets[None, :]
+        encoder_window = self.sequence_bank[encoder_index]
+        encoder_input = encoder_window.reshape(encoder_window.shape[0], -1)
 
-        encoder_input = encoder_window.reshape(-1)
-        decoder_condition = condition_window.reshape(-1)
-        target = target_window.reshape(-1)
+        if self.condition_window > 0:
+            condition_index = base_positions[:, None] + self._condition_offsets[None, :]
+            condition_window = self.sequence_bank[condition_index]
+            decoder_condition = condition_window.reshape(condition_window.shape[0], -1)
+        else:
+            decoder_condition = self.sequence_bank.new_zeros((encoder_input.shape[0], 0))
+
+        target_index = base_positions[:, None] + self._target_offsets[None, :]
+        target_window = self.sequence_bank[target_index]
+        target = target_window.reshape(target_window.shape[0], -1)
 
         return {
             "encoder_input": encoder_input,
             "decoder_condition": decoder_condition,
             "target": target,
-            # Aliases kept for simple backward compatibility.
             "input": encoder_input,
             "state": encoder_input,
-            "motion_id": torch.tensor(sequence_id, dtype=torch.long),
-            "frame_id": torch.tensor(center_id, dtype=torch.long),
+            "motion_id": sequence_ids,
+            "frame_id": center_ids,
         }
