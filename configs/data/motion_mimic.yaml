@@ -1,4 +1,4 @@
-batch_size: 4096
+batch_size: 32768
 val_ratio: 0.2
 motion_files: []
 motion_file_yaml: configs/data/motion_file.yaml
