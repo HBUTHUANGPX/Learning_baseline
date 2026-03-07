@@ -40,6 +40,8 @@ class MotionDatasetConfig:
         feature_keys: NPZ keys concatenated into frame features.
         frame_stride: Temporal sampling stride.
         normalize: Whether to z-score normalize all frame features.
+        cache_device: Device where dataset tensors are cached.
+            ``"auto"`` chooses CUDA when available, otherwise CPU.
         history_frames: Number of history frames for encoder/decoder condition.
         future_frames: Number of future frames included in encoder input and
             target reconstruction.
@@ -49,6 +51,7 @@ class MotionDatasetConfig:
     feature_keys: tuple[str, ...] = ("joint_pos", "joint_vel")
     frame_stride: int = 1
     normalize: bool = False
+    cache_device: str = "auto"
     history_frames: int = 0
     future_frames: int = 0
 
@@ -137,6 +140,7 @@ class MotionFrameDataset(Dataset):
         """
         self.config = config
         self._validate_temporal_config()
+        self.cache_device = self._resolve_cache_device(config.cache_device)
 
         self.paths = resolve_motion_files(config.motion_files)
 
@@ -203,6 +207,18 @@ class MotionFrameDataset(Dataset):
         if self.config.history_frames < 0 or self.config.future_frames < 0:
             raise ValueError("history_frames and future_frames must be >= 0.")
 
+    def _resolve_cache_device(self, raw_device: str) -> torch.device:
+        """Resolves tensor cache device from config."""
+        if raw_device == "auto":
+            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if raw_device == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError("cache_device='cuda' was requested but CUDA is unavailable.")
+            return torch.device("cuda")
+        if raw_device == "cpu":
+            return torch.device("cpu")
+        raise ValueError("cache_device must be one of: auto, cpu, cuda.")
+
     def _read_npz_to_member_lists(self, path: Path) -> None:
         """Loads one NPZ and writes all keys as explicit class members.
 
@@ -235,7 +251,7 @@ class MotionFrameDataset(Dataset):
                         self._npz_keys.append("root_xy_pos")
                         setattr(self, "root_xy_pos", [])
 
-                _tensor = torch.as_tensor(data[key], dtype=torch.float32)
+                _tensor = torch.as_tensor(data[key], dtype=torch.float32).to(self.cache_device)
                 getattr(self, key).append(_tensor)
                 if key == "body_quat_w":
                     root_quat_w = _tensor[:, self.motion_reference_body_names_in_isaacsim_index, :]

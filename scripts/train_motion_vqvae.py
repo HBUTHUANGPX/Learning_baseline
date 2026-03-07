@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--motion-feature-keys", type=str, default="joint_pos,joint_vel")
     parser.add_argument("--motion-frame-stride", type=int, default=1)
     parser.add_argument("--motion-normalize", action="store_true")
+    parser.add_argument(
+        "--motion-cache-device",
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+        help="Where to cache dataset tensors. Use 'cuda' to avoid per-batch H2D copies.",
+    )
     parser.add_argument("--history-frames", type=int, default=0)
     parser.add_argument("--future-frames", type=int, default=0)
     parser.add_argument("--val-ratio", type=float, default=0.2)
@@ -159,9 +165,15 @@ def _run_epoch(
 
     progress = tqdm(loader, desc="Train" if is_train else "Val", leave=False)
     for batch in progress:
-        encoder_input = batch["encoder_input"].to(device)
-        decoder_condition = batch["decoder_condition"].to(device)
-        target = batch["target"].to(device)
+        encoder_input = batch["encoder_input"]
+        decoder_condition = batch["decoder_condition"]
+        target = batch["target"]
+        if encoder_input.device != device:
+            encoder_input = encoder_input.to(device, non_blocking=True)
+        if decoder_condition.device != device:
+            decoder_condition = decoder_condition.to(device, non_blocking=True)
+        if target.device != device:
+            target = target.to(device, non_blocking=True)
 
         outputs = model(encoder_input, decoder_condition)
         losses = model.loss_function(target, outputs)
@@ -205,6 +217,7 @@ def main(args: argparse.Namespace | None = None) -> None:
         motion_feature_keys=_to_tuple(args.motion_feature_keys),
         motion_frame_stride=args.motion_frame_stride,
         motion_normalize=args.motion_normalize,
+        motion_cache_device=str(device) if args.motion_cache_device == "auto" else args.motion_cache_device,
         history_frames=args.history_frames,
         future_frames=args.future_frames,
     )
@@ -222,6 +235,7 @@ def main(args: argparse.Namespace | None = None) -> None:
         decoder_condition_dim=decoder_condition_dim,
         target_dim=target_dim,
     ).to(device)
+    print(model)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(1, args.epochs + 1):

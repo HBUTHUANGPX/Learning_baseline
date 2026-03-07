@@ -50,6 +50,7 @@ def _cfg_to_namespace(cfg: DictConfig) -> SimpleNamespace:
         motion_group=str(cfg.data.motion_group),
         motion_feature_keys=",".join(cfg.data.motion_feature_keys),
         motion_frame_stride=int(cfg.data.motion_frame_stride),
+        motion_cache_device=str(cfg.data.motion_cache_device),
         motion_normalize=bool(cfg.data.motion_normalize),
         history_frames=int(cfg.data.history_frames),
         future_frames=int(cfg.data.future_frames),

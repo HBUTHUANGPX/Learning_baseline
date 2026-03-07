@@ -27,6 +27,8 @@ class DataConfig:
         motion_feature_keys: Feature keys concatenated into frame vectors.
         motion_frame_stride: Frame stride used during loading.
         motion_normalize: Whether to normalize all frames globally.
+        motion_cache_device: Device where motion tensors are cached.
+            ``"auto"`` chooses CUDA when available, otherwise CPU.
         history_frames: Number of history frames in context/condition.
         future_frames: Number of future frames in context/target.
     """
@@ -40,6 +42,7 @@ class DataConfig:
     motion_feature_keys: tuple[str, ...] = ("joint_pos", "joint_vel")
     motion_frame_stride: int = 1
     motion_normalize: bool = False
+    motion_cache_device: str = "auto"
     history_frames: int = 0
     future_frames: int = 0
 
@@ -98,6 +101,7 @@ def create_motion_dataloaders(
             feature_keys=config.motion_feature_keys,
             frame_stride=config.motion_frame_stride,
             normalize=config.motion_normalize,
+            cache_device=config.motion_cache_device,
             history_frames=config.history_frames,
             future_frames=config.future_frames,
         )
@@ -120,16 +124,19 @@ def create_motion_dataloaders(
         train_set = Subset(dataset, permutation[:train_size])
         val_set = Subset(dataset, permutation[train_size:])
 
+    pin_memory = dataset.cache_device.type == "cpu" and torch.cuda.is_available()
     train_loader = DataLoader(
         train_set,
         batch_size=config.batch_size,
         shuffle=True,
+        pin_memory=pin_memory,
         drop_last=False,
     )
     val_loader = DataLoader(
         val_set,
         batch_size=config.batch_size,
         shuffle=False,
+        pin_memory=pin_memory,
         drop_last=False,
     )
     return (
