@@ -142,14 +142,18 @@ class FSQQuantizer(nn.Module):
         z_q = (indices.to(z_e.dtype) / level_scale) * 2.0 - 1.0
         z_q_st = z_bound + (z_q - z_bound).detach()
 
-        one_hot = F.one_hot(indices, num_classes=self.levels).to(dtype=z_e.dtype)  # [B, D, L]
+        one_hot = F.one_hot(indices, num_classes=self.levels).to(
+            dtype=z_e.dtype
+        )  # [B, D, L]
         per_dim_usage = one_hot.mean(dim=0)  # [D, L]
         level_histogram = per_dim_usage.mean(dim=0)  # [L], averaged over latent dims
         used_mask = per_dim_usage > 1e-6
         avg_utilization = used_mask.to(dtype=z_e.dtype).mean() * 100.0
         unique_per_dim = used_mask.sum(dim=1).clamp(min=1).to(dtype=z_e.dtype)
         effective_bits = torch.log2(unique_per_dim).mean()
-        per_dim_usage_norm = per_dim_usage / per_dim_usage.sum(dim=1, keepdim=True).clamp_min(1e-10)
+        per_dim_usage_norm = per_dim_usage / per_dim_usage.sum(
+            dim=1, keepdim=True
+        ).clamp_min(1e-10)
         entropy = -torch.sum(
             per_dim_usage_norm * torch.log2(per_dim_usage_norm.clamp_min(1e-10)),
             dim=1,
@@ -223,7 +227,9 @@ class IFSQuantizer(FSQQuantizer):
             Same output dictionary as :class:`FSQQuantizer`.
         """
         if z_e.ndim != 2:
-            raise ValueError(f"iFSQ expects [B, D] input, got shape {tuple(z_e.shape)}.")
+            raise ValueError(
+                f"iFSQ expects [B, D] input, got shape {tuple(z_e.shape)}."
+            )
 
         z_bound = self._bound_latent(z_e)
         level_scale = float(self.levels - 1)
@@ -239,7 +245,9 @@ class IFSQuantizer(FSQQuantizer):
         avg_utilization = used_mask.to(dtype=z_e.dtype).mean() * 100.0
         unique_per_dim = used_mask.sum(dim=1).clamp(min=1).to(dtype=z_e.dtype)
         effective_bits = torch.log2(unique_per_dim).mean()
-        per_dim_usage_norm = per_dim_usage / per_dim_usage.sum(dim=1, keepdim=True).clamp_min(1e-10)
+        per_dim_usage_norm = per_dim_usage / per_dim_usage.sum(
+            dim=1, keepdim=True
+        ).clamp_min(1e-10)
         entropy = -torch.sum(
             per_dim_usage_norm * torch.log2(per_dim_usage_norm.clamp_min(1e-10)),
             dim=1,

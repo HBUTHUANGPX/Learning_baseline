@@ -83,8 +83,7 @@ class _FrameQuantizedAutoencoderBase(nn.Module):
         norm = mode.lower().strip()
         if norm not in {"mse", "bce"}:
             raise ValueError(
-                f"Unsupported reconstruction loss mode: {mode}. "
-                "Use 'mse' or 'bce'."
+                f"Unsupported reconstruction loss mode: {mode}. " "Use 'mse' or 'bce'."
             )
         return norm
 
@@ -105,7 +104,9 @@ class _FrameQuantizedAutoencoderBase(nn.Module):
             Batch-averaged reconstruction loss scalar.
         """
         if mode == "bce":
-            return F.binary_cross_entropy(x_hat, target, reduction="sum") / target.shape[0]
+            return (
+                F.binary_cross_entropy(x_hat, target, reduction="sum") / target.shape[0]
+            )
         return F.mse_loss(x_hat, target, reduction="sum") / target.shape[0]
 
     def _forward_with_quantizer(
@@ -212,7 +213,9 @@ class FrameVQVAE(_FrameQuantizedAutoencoderBase):
             Dictionary containing total, reconstruction, quantization losses,
             and perplexity metric.
         """
-        recon = self._reconstruction_loss(outputs["x_hat"], target, self.recon_loss_mode)
+        recon = self._reconstruction_loss(
+            outputs["x_hat"], target, self.recon_loss_mode
+        )
         quant = outputs["quant_loss"]
         total = recon + quant
         return {
@@ -296,7 +299,9 @@ class FrameFSQVAE(_FrameQuantizedAutoencoderBase):
             Dictionary containing total and reconstruction losses. ``quant_loss``
             is intentionally absent for FSQ.
         """
-        recon = self._reconstruction_loss(outputs["x_hat"], target, self.recon_loss_mode)
+        recon = self._reconstruction_loss(
+            outputs["x_hat"], target, self.recon_loss_mode
+        )
         return {
             "loss": recon,
             "recon_loss": recon,
@@ -368,7 +373,9 @@ class FrameIFSQVAE(_FrameQuantizedAutoencoderBase):
         outputs: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
         """Computes iFSQ-VAE losses (reconstruction-only objective)."""
-        recon = self._reconstruction_loss(outputs["x_hat"], target, self.recon_loss_mode)
+        recon = self._reconstruction_loss(
+            outputs["x_hat"], target, self.recon_loss_mode
+        )
         return {
             "loss": recon,
             "recon_loss": recon,

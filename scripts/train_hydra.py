@@ -73,9 +73,9 @@ def _main_impl(cfg: DictConfig) -> None:
 
 
 if hydra is not None:
-    main = hydra.main(version_base=None, config_path="../configs", config_name="config")(
-        _main_impl
-    )
+    main = hydra.main(
+        version_base=None, config_path="../configs", config_name="config"
+    )(_main_impl)
 else:
 
     def main() -> None:

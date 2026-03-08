@@ -12,7 +12,6 @@ import argparse
 import csv
 from pathlib import Path
 
-
 MOVEMENT_TYPE_LABELS = {
     "BR": "Backwards Running",
     "BW": "Backwards Walking",
@@ -28,7 +27,9 @@ MOVEMENT_TYPE_LABELS = {
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build NPZ + style + movement metadata CSV.")
+    parser = argparse.ArgumentParser(
+        description="Build NPZ + style + movement metadata CSV."
+    )
     parser.add_argument(
         "--root",
         type=str,
@@ -135,4 +136,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

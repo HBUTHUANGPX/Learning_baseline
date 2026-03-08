@@ -76,7 +76,9 @@ class TensorboardLogger:
         for key, value in metrics.items():
             self._writer.add_scalar(f"{prefix}/{key}", value, step)
 
-    def log_tensors(self, metrics: Dict[str, "torch.Tensor"], step: int, prefix: str) -> None:
+    def log_tensors(
+        self, metrics: Dict[str, "torch.Tensor"], step: int, prefix: str
+    ) -> None:
         """Logs tensor metrics as TensorBoard histograms.
 
         Args:
@@ -89,7 +91,9 @@ class TensorboardLogger:
                 continue
             self._writer.add_histogram(f"{prefix}/{key}", value.reshape(-1), step)
 
-    def log_level_usage(self, level_histogram: torch.Tensor, step: int, prefix: str) -> None:
+    def log_level_usage(
+        self, level_histogram: torch.Tensor, step: int, prefix: str
+    ) -> None:
         """Logs per-level utilization as scalar curves.
 
         Args:
@@ -103,7 +107,9 @@ class TensorboardLogger:
             )
         values = level_histogram.detach().to(dtype=torch.float32, device="cpu")
         for level_id, value in enumerate(values):
-            self._writer.add_scalar(f"{prefix}/level_usage/l{level_id}", float(value), step)
+            self._writer.add_scalar(
+                f"{prefix}/level_usage/l{level_id}", float(value), step
+            )
 
     def close(self) -> None:
         """Flushes and closes the writer."""

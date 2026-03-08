@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 from utils.urdf_graph import UrdfGraph
 from utils.math import *
 
+
 def _flatten_temporal_tensor(tensor: torch.Tensor) -> torch.Tensor:
     """Flattens a temporal tensor to ``[T, D]``.
 
@@ -25,7 +26,9 @@ def _flatten_temporal_tensor(tensor: torch.Tensor) -> torch.Tensor:
         ValueError: If tensor is scalar and has no temporal axis.
     """
     if tensor.ndim == 0:
-        raise ValueError("Scalar tensor has no temporal axis and cannot be flattened to [T, D].")
+        raise ValueError(
+            "Scalar tensor has no temporal axis and cannot be flattened to [T, D]."
+        )
     if tensor.ndim == 1:
         return tensor.unsqueeze(-1).float()
     return tensor.reshape(tensor.shape[0], -1).float()
@@ -106,7 +109,9 @@ def load_motion_feature_sequence(
         for key in feature_keys:
             if key not in data:
                 raise KeyError(f"Feature key '{key}' not found in {path}.")
-            part = _flatten_temporal_tensor(torch.as_tensor(data[key], dtype=torch.float32))
+            part = _flatten_temporal_tensor(
+                torch.as_tensor(data[key], dtype=torch.float32)
+            )
             features.append(part)
             lengths.append(int(part.shape[0]))
 
@@ -171,17 +176,22 @@ class MotionFrameDataset(Dataset):
         # Tensorized sequence storage.
         sequence_lengths = torch.tensor(
             [int(sequence.shape[0]) for sequence in self._sequence_feature_tensors],
-            dtype=torch.long,device=self.cache_device,
+            dtype=torch.long,
+            device=self.cache_device,
         )
         self.sequence_lengths = [int(v) for v in sequence_lengths.tolist()]
         self.num_sequences = int(sequence_lengths.numel())
         self.frame_dim = int(self._sequence_feature_tensors[0].shape[-1])
 
-        self.sequence_start = torch.zeros(self.num_sequences, dtype=torch.long, device=self.cache_device)
+        self.sequence_start = torch.zeros(
+            self.num_sequences, dtype=torch.long, device=self.cache_device
+        )
         if self.num_sequences > 1:
             self.sequence_start[1:] = torch.cumsum(sequence_lengths[:-1], dim=0)
         self.sequence_lengths_tensor = sequence_lengths
-        self.sequence_bank = torch.cat(self._sequence_feature_tensors, dim=0).contiguous()
+        self.sequence_bank = torch.cat(
+            self._sequence_feature_tensors, dim=0
+        ).contiguous()
 
         self.encoder_window = 1 + int(config.history_frames) + int(config.future_frames)
         self.target_window = 1 + int(config.future_frames)
@@ -231,7 +241,9 @@ class MotionFrameDataset(Dataset):
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if raw_device == "cuda":
             if not torch.cuda.is_available():
-                raise RuntimeError("cache_device='cuda' was requested but CUDA is unavailable.")
+                raise RuntimeError(
+                    "cache_device='cuda' was requested but CUDA is unavailable."
+                )
             return torch.device("cuda")
         if raw_device == "cpu":
             return torch.device("cpu")
@@ -272,8 +284,10 @@ class MotionFrameDataset(Dataset):
                 _tensor = torch.as_tensor(data[key], dtype=torch.float32)
                 getattr(self, key).append(_tensor)
                 if key == "body_quat_w":
-                    root_quat_w = _tensor[:, self.motion_reference_body_names_in_isaacsim_index, :]
-                    root_euler_w = torch.stack(euler_xyz_from_quat(root_quat_w),dim=-1)
+                    root_quat_w = _tensor[
+                        :, self.motion_reference_body_names_in_isaacsim_index, :
+                    ]
+                    root_euler_w = torch.stack(euler_xyz_from_quat(root_quat_w), dim=-1)
                     continuous_trigonometric_encoding = torch.cat(
                         [
                             torch.sin(root_euler_w[:, 0:1]),
@@ -284,20 +298,26 @@ class MotionFrameDataset(Dataset):
                         dim=1,
                     )
                     # ∆ψt = yawt+1 − yawt denotes the incremental change of the root yaw
-                    diffs = torch.diff(root_euler_w[:, 2:3], dim=0)  # 相邻差分，形状 (N-1, 1)
+                    diffs = torch.diff(
+                        root_euler_w[:, 2:3], dim=0
+                    )  # 相邻差分，形状 (N-1, 1)
                     delta_yaw = torch.cat([diffs[0:1], diffs], dim=0)
                     getattr(self, "root_quat_w").append(root_quat_w)
                     getattr(self, "root_euler_w").append(root_euler_w)
-                    getattr(self, "continuous_trigonometric_encoding").append(continuous_trigonometric_encoding)
+                    getattr(self, "continuous_trigonometric_encoding").append(
+                        continuous_trigonometric_encoding
+                    )
                     getattr(self, "delta_yaw").append(delta_yaw)
                 if key == "joint_pos":
-                    diffs = torch.diff(_tensor,dim=0)
+                    diffs = torch.diff(_tensor, dim=0)
                     delta_joint_pos = torch.cat([diffs[0:1], diffs], dim=0)
                     getattr(self, "delta_joint_pos").append(delta_joint_pos)
                 if key == "body_pos_w":
-                    root_pos_w = _tensor[:, self.motion_reference_body_names_in_isaacsim_index, :]
+                    root_pos_w = _tensor[
+                        :, self.motion_reference_body_names_in_isaacsim_index, :
+                    ]
                     root_height = root_pos_w[:, 2:3]
-                    root_xy_pos = root_pos_w[:, 0:2]-root_pos_w[0:1, 0:2]
+                    root_xy_pos = root_pos_w[:, 0:2] - root_pos_w[0:1, 0:2]
                     getattr(self, "root_pos_w").append(root_pos_w)
                     getattr(self, "root_height").append(root_height)
                     getattr(self, "root_xy_pos").append(root_xy_pos)
@@ -313,12 +333,15 @@ class MotionFrameDataset(Dataset):
                 setattr(self, key, torch.stack(sequence_tensors, dim=0).contiguous())
                 lengths = [1] * len(sequence_tensors)
                 self._member_sequence_lengths[key] = lengths
-                self._member_sequence_start[key] = self._build_sequence_start_tensor(lengths)
+                self._member_sequence_start[key] = self._build_sequence_start_tensor(
+                    lengths
+                )
                 continue
 
             base_shape = sequence_tensors[0].shape[1:]
             can_cat = all(
-                tensor.ndim >= 1 and tensor.shape[1:] == base_shape for tensor in sequence_tensors
+                tensor.ndim >= 1 and tensor.shape[1:] == base_shape
+                for tensor in sequence_tensors
             )
             if not can_cat:
                 raise ValueError(
@@ -327,10 +350,16 @@ class MotionFrameDataset(Dataset):
                 )
 
             lengths = [int(tensor.shape[0]) for tensor in sequence_tensors]
-                
-            setattr(self, key, torch.cat(sequence_tensors, dim=0).to(self.cache_device).contiguous())
+
+            setattr(
+                self,
+                key,
+                torch.cat(sequence_tensors, dim=0).to(self.cache_device).contiguous(),
+            )
             self._member_sequence_lengths[key] = lengths
-            self._member_sequence_start[key] = self._build_sequence_start_tensor(lengths)
+            self._member_sequence_start[key] = self._build_sequence_start_tensor(
+                lengths
+            )
 
     def _prepare_feature_members(self) -> None:
         """Hook for user-defined member preprocessing before feature building.
@@ -342,7 +371,9 @@ class MotionFrameDataset(Dataset):
         # Reserved for custom feature construction from raw members.
         # Example:
         # self.my_feature = [build(seq) for seq in self.some_raw_key]
-        urdf_graph = UrdfGraph("/home/hpx/HPX_LOCO_2/mimic_baseline/general_motion_tracker_whole_body_teleoperation/general_motion_tracker_whole_body_teleoperation/assets/Q1/urdf/Q1_wo_hand_rl.urdf")  # Example of using UrdfGraph if needed.
+        urdf_graph = UrdfGraph(
+            "/home/hpx/HPX_LOCO_2/mimic_baseline/general_motion_tracker_whole_body_teleoperation/general_motion_tracker_whole_body_teleoperation/assets/Q1/urdf/Q1_wo_hand_rl.urdf"
+        )  # Example of using UrdfGraph if needed.
         isaac_sim_link_name = urdf_graph.bfs_link_order()
         motion_reference_body = "torso_link"
         motion_body_names = [
@@ -365,7 +396,9 @@ class MotionFrameDataset(Dataset):
         self.motion_body_names_in_isaacsim_index = [
             isaac_sim_link_name.index(name) for name in motion_body_names
         ]
-        self.motion_reference_body_names_in_isaacsim_index = motion_body_names.index(motion_reference_body)
+        self.motion_reference_body_names_in_isaacsim_index = motion_body_names.index(
+            motion_reference_body
+        )
         return
 
     def _build_sequence_feature_tensors(self) -> list[torch.Tensor]:
@@ -425,7 +458,9 @@ class MotionFrameDataset(Dataset):
         if isinstance(member, torch.Tensor):
             return
         if not isinstance(member, list):
-            raise TypeError(f"Dataset member '{key}' must be Tensor or list[Tensor], got {type(member)}.")
+            raise TypeError(
+                f"Dataset member '{key}' must be Tensor or list[Tensor], got {type(member)}."
+            )
         if not member:
             raise ValueError(f"Dataset member '{key}' is empty.")
 
@@ -434,7 +469,9 @@ class MotionFrameDataset(Dataset):
             tensorized = torch.stack(member, dim=0).contiguous()
         else:
             base_shape = member[0].shape[1:]
-            can_cat = all(tensor.ndim >= 1 and tensor.shape[1:] == base_shape for tensor in member)
+            can_cat = all(
+                tensor.ndim >= 1 and tensor.shape[1:] == base_shape for tensor in member
+            )
             if not can_cat:
                 raise ValueError(
                     f"Cannot concatenate feature member '{key}' with shapes: "
@@ -451,7 +488,9 @@ class MotionFrameDataset(Dataset):
         """Builds per-sequence start offsets from sequence lengths."""
         start = torch.zeros(len(lengths), dtype=torch.long)
         if len(lengths) > 1:
-            start[1:] = torch.cumsum(torch.tensor(lengths[:-1], dtype=torch.long), dim=0)
+            start[1:] = torch.cumsum(
+                torch.tensor(lengths[:-1], dtype=torch.long), dim=0
+            )
         return start
 
     def _build_center_index_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -477,7 +516,9 @@ class MotionFrameDataset(Dataset):
         if not center_seq_list:
             return torch.zeros(0, dtype=torch.long), torch.zeros(0, dtype=torch.long)
 
-        return torch.cat(center_seq_list, dim=0).to(self.cache_device), torch.cat(center_local_list, dim=0).to(self.cache_device)
+        return torch.cat(center_seq_list, dim=0).to(self.cache_device), torch.cat(
+            center_local_list, dim=0
+        ).to(self.cache_device)
 
     def __len__(self) -> int:
         """Returns total number of valid center frames."""
@@ -492,7 +533,9 @@ class MotionFrameDataset(Dataset):
         Returns:
             Dictionary with encoder input, decoder condition, and target vectors.
         """
-        batch = self.get_batch(torch.tensor([index], dtype=torch.long, device=self.center_seq_ids.device))
+        batch = self.get_batch(
+            torch.tensor([index], dtype=torch.long, device=self.center_seq_ids.device)
+        )
         return {
             "encoder_input": batch["encoder_input"][0],
             "decoder_condition": batch["decoder_condition"][0],
@@ -503,7 +546,9 @@ class MotionFrameDataset(Dataset):
             "frame_id": batch["frame_id"][0],
         }
 
-    def get_batch(self, batch_indices: torch.Tensor) -> MutableMapping[str, torch.Tensor]:
+    def get_batch(
+        self, batch_indices: torch.Tensor
+    ) -> MutableMapping[str, torch.Tensor]:
         """Builds one batch with tensorized window indexing.
 
         Args:
@@ -514,7 +559,9 @@ class MotionFrameDataset(Dataset):
         """
         if batch_indices.ndim != 1:
             raise ValueError("batch_indices must be a 1D tensor.")
-        sample_ids = batch_indices.to(device=self.center_seq_ids.device, dtype=torch.long)
+        sample_ids = batch_indices.to(
+            device=self.center_seq_ids.device, dtype=torch.long
+        )
         sequence_ids = self.center_seq_ids[sample_ids]
         center_ids = self.center_local_ids[sample_ids]
         base_positions = self.sequence_start[sequence_ids] + center_ids
@@ -528,7 +575,9 @@ class MotionFrameDataset(Dataset):
             condition_window = self.sequence_bank[condition_index]
             decoder_condition = condition_window.reshape(condition_window.shape[0], -1)
         else:
-            decoder_condition = self.sequence_bank.new_zeros((encoder_input.shape[0], 0))
+            decoder_condition = self.sequence_bank.new_zeros(
+                (encoder_input.shape[0], 0)
+            )
 
         target_index = base_positions[:, None] + self._target_offsets[None, :]
         target_window = self.sequence_bank[target_index]

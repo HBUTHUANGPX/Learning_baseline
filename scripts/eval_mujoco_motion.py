@@ -155,13 +155,21 @@ def _build_eval_samples(
         target = features[center : center + future_frames + 1]
 
         enc_list.append(window.reshape(-1))
-        cond_list.append(history.reshape(-1) if history_frames > 0 else np.zeros((0,), dtype=np.float32))
+        cond_list.append(
+            history.reshape(-1)
+            if history_frames > 0
+            else np.zeros((0,), dtype=np.float32)
+        )
         target_list.append(target.reshape(-1))
         qpos_current.append(qpos[center])
 
     return (
         np.stack(enc_list, axis=0).astype(np.float32),
-        np.stack(cond_list, axis=0).astype(np.float32) if history_frames > 0 else np.zeros((len(enc_list), 0), dtype=np.float32),
+        (
+            np.stack(cond_list, axis=0).astype(np.float32)
+            if history_frames > 0
+            else np.zeros((len(enc_list), 0), dtype=np.float32)
+        ),
         np.stack(target_list, axis=0).astype(np.float32),
         np.stack(qpos_current, axis=0).astype(np.float32),
     )
@@ -193,17 +201,23 @@ def main() -> None:
     ckpt = torch.load(args.ckpt, map_location="cpu")
     train_args = ckpt["args"]
 
-    motion_path = _resolve_motion_file(args.motion_file, args.motion_file_yaml, args.motion_group)
+    motion_path = _resolve_motion_file(
+        args.motion_file, args.motion_file_yaml, args.motion_group
+    )
     feature_keys = _to_tuple(args.motion_feature_keys)
-    features, qpos_gt, fps = _load_arrays(motion_path, feature_keys, args.qpos_key, args.frame_stride)
+    features, qpos_gt, fps = _load_arrays(
+        motion_path, feature_keys, args.qpos_key, args.frame_stride
+    )
 
     history_frames = int(train_args.get("history_frames", 0))
     future_frames = int(train_args.get("future_frames", 0))
-    encoder_inputs, decoder_conditions, target_windows, qpos_current = _build_eval_samples(
-        features=features,
-        qpos=qpos_gt,
-        history_frames=history_frames,
-        future_frames=future_frames,
+    encoder_inputs, decoder_conditions, target_windows, qpos_current = (
+        _build_eval_samples(
+            features=features,
+            qpos=qpos_gt,
+            history_frames=history_frames,
+            future_frames=future_frames,
+        )
     )
 
     encoder_input_dim = int(ckpt.get("encoder_input_dim", encoder_inputs.shape[1]))
@@ -260,8 +274,15 @@ def main() -> None:
 
     def _step(eval_index: int) -> None:
         """Runs one inference step and writes qpos to MuJoCo."""
-        enc = torch.from_numpy(encoder_inputs[eval_index]).float().unsqueeze(0).to(device)
-        cond = torch.from_numpy(decoder_conditions[eval_index]).float().unsqueeze(0).to(device)
+        enc = (
+            torch.from_numpy(encoder_inputs[eval_index]).float().unsqueeze(0).to(device)
+        )
+        cond = (
+            torch.from_numpy(decoder_conditions[eval_index])
+            .float()
+            .unsqueeze(0)
+            .to(device)
+        )
         with torch.no_grad():
             x_hat = model(enc, cond)["x_hat"].detach().cpu().numpy().reshape(-1)
         start = int(args.qpos_slice_start)
@@ -270,7 +291,11 @@ def main() -> None:
         # on reconstructed current frame by default when qpos_slice_start is set
         # within the first frame block.
         recon_qpos = x_hat[start:stop]
-        write_qpos = qpos_current[eval_index, :qpos_dim] if args.write_source == "gt" else recon_qpos
+        write_qpos = (
+            qpos_current[eval_index, :qpos_dim]
+            if args.write_source == "gt"
+            else recon_qpos
+        )
         mj_data.qpos[args.qpos_start_idx : args.qpos_start_idx + qpos_dim] = write_qpos
         mujoco.mj_forward(mj_model, mj_data)
 

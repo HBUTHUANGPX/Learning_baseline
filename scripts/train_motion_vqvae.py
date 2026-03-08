@@ -41,9 +41,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ifsq-boundary-scale", type=float, default=1.6)
     parser.add_argument("--beta", type=float, default=0.25)
-    parser.add_argument(
-        "--recon-loss-mode", choices=["bce", "mse"], default="mse"
-    )
+    parser.add_argument("--recon-loss-mode", choices=["bce", "mse"], default="mse")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -55,7 +53,9 @@ def parse_args() -> argparse.Namespace:
         "--motion-file-yaml", type=str, default="configs/data/motion_file.yaml"
     )
     parser.add_argument("--motion-group", type=str, default="")
-    parser.add_argument("--motion-feature-keys", type=str, default="joint_pos,joint_vel")
+    parser.add_argument(
+        "--motion-feature-keys", type=str, default="joint_pos,joint_vel"
+    )
     parser.add_argument("--motion-frame-stride", type=int, default=1)
     parser.add_argument("--motion-normalize", action="store_true")
     parser.add_argument(
@@ -202,7 +202,9 @@ def _run_epoch(
             if not isinstance(value, torch.Tensor):
                 continue
             if value.numel() == 1:
-                metric_sum[key] = metric_sum.get(key, 0.0) + float(value.detach().cpu()) * batch_size
+                metric_sum[key] = (
+                    metric_sum.get(key, 0.0) + float(value.detach().cpu()) * batch_size
+                )
                 continue
             if value.ndim < 1:
                 continue
@@ -248,7 +250,9 @@ def main(args: argparse.Namespace | None = None) -> None:
         motion_feature_keys=_to_tuple(args.motion_feature_keys),
         motion_frame_stride=args.motion_frame_stride,
         motion_normalize=args.motion_normalize,
-        motion_cache_device=str(device) if motion_cache_device == "auto" else motion_cache_device,
+        motion_cache_device=(
+            str(device) if motion_cache_device == "auto" else motion_cache_device
+        ),
         history_frames=args.history_frames,
         future_frames=args.future_frames,
     )
@@ -269,7 +273,9 @@ def main(args: argparse.Namespace | None = None) -> None:
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(1, args.epochs + 1):
-        train_metrics, train_tensor_metrics = _run_epoch(model, train_loader, device, optimizer)
+        train_metrics, train_tensor_metrics = _run_epoch(
+            model, train_loader, device, optimizer
+        )
         val_metrics, val_tensor_metrics = _run_epoch(model, val_loader, device, None)
 
         tb_logger.log_scalars(train_metrics, epoch, prefix="train")

@@ -11,7 +11,6 @@ from pathlib import Path
 from openai import OpenAI
 from tqdm.auto import tqdm
 
-
 DEFAULT_INPUT = "data/Q1/100STYLE/NPZ_Style_Movement_Metadata.csv"
 DEFAULT_OUTPUT = "tmp/NPZ_Style_Movement_Metadata_with_clip_text.csv"
 DEFAULT_CACHE = "tmp/NPZ_Style_Movement_prompt_cache.csv"
@@ -61,7 +60,9 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def write_csv_rows(path: Path, rows: list[dict[str, str]], fieldnames: list[str]) -> None:
+def write_csv_rows(
+    path: Path, rows: list[dict[str, str]], fieldnames: list[str]
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -87,14 +88,16 @@ def load_cache(path: Path) -> dict[str, str]:
 
 
 def save_cache(path: Path, cache: dict[str, str]) -> None:
-    rows = [{"pair_key": key, "clip_text_prompt": value} for key, value in sorted(cache.items())]
+    rows = [
+        {"pair_key": key, "clip_text_prompt": value}
+        for key, value in sorted(cache.items())
+    ]
     write_csv_rows(path, rows, ["pair_key", "clip_text_prompt"])
 
 
 def build_user_prompt(style_description: str, movement_label: str) -> str:
     return (
-        f'style_description="{style_description}"\n'
-        f'movement_type="{movement_label}"'
+        f'style_description="{style_description}"\n' f'movement_type="{movement_label}"'
     )
 
 

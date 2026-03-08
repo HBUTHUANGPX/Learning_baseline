@@ -9,6 +9,7 @@ from typing import Any, Iterator
 
 import torch
 from tqdm.auto import tqdm
+
 try:
     from transformers import CLIPTextModel, CLIPTokenizer
 except ImportError as exc:  # pragma: no cover
@@ -61,7 +62,9 @@ def read_rows(path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def batch_iter(items: list[dict[str, str]], batch_size: int) -> Iterator[list[dict[str, str]]]:
+def batch_iter(
+    items: list[dict[str, str]], batch_size: int
+) -> Iterator[list[dict[str, str]]]:
     for start in range(0, len(items), batch_size):
         yield items[start : start + batch_size]
 
@@ -101,7 +104,9 @@ def encode_prompts(
         else:
             # Fallback mean pooling with attention mask.
             attn = enc["attention_mask"].to(device).unsqueeze(-1).float()
-            pooled = (out.last_hidden_state * attn).sum(dim=1) / attn.sum(dim=1).clamp(min=1e-6)
+            pooled = (out.last_hidden_state * attn).sum(dim=1) / attn.sum(dim=1).clamp(
+                min=1e-6
+            )
         pooled = pooled.detach().cpu()
 
         for idx, name in enumerate(names):
@@ -144,7 +149,9 @@ def main() -> None:
         raise KeyError(f"Input CSV missing required columns: {sorted(missing_cols)}")
 
     device = resolve_device(args.device)
-    tokenizer = CLIPTokenizer.from_pretrained(str(clip_path), max_length=args.max_length)
+    tokenizer = CLIPTokenizer.from_pretrained(
+        str(clip_path), max_length=args.max_length
+    )
     model = CLIPTextModel.from_pretrained(str(clip_path)).to(device).eval()
 
     data = encode_prompts(
