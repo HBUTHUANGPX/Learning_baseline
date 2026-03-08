@@ -51,7 +51,6 @@ def test_frame_fsqvae_forward_and_loss() -> None:
     assert set(losses.keys()) == {
         "loss",
         "recon_loss",
-        "quant_loss",
         "effective_bits",
         "avg_utilization",
         "level_histogram",
@@ -59,11 +58,10 @@ def test_frame_fsqvae_forward_and_loss() -> None:
     }
     assert losses["loss"].dim() == 0
     assert torch.allclose(losses["loss"], losses["recon_loss"])
-    assert torch.allclose(losses["quant_loss"], torch.zeros_like(losses["quant_loss"]))
 
 
-def test_fsq_quantizer_returns_full_indices_and_zero_quant_loss() -> None:
-    """Tests FSQ quantizer outputs full per-dimension indices and zero quant loss."""
+def test_fsq_quantizer_returns_full_indices_and_usage_metrics() -> None:
+    """Tests FSQ quantizer outputs full per-dimension indices and usage metrics."""
     quantizer = FSQQuantizer(levels=8)
     z_e = torch.randn(5, 7)
     out = quantizer(z_e)
@@ -71,8 +69,7 @@ def test_fsq_quantizer_returns_full_indices_and_zero_quant_loss() -> None:
     assert out["z_q"].shape == (5, 7)
     assert out["indices"].shape == (5, 7)
     assert out["indices"].dtype == torch.long
-    assert out["quant_loss"].dim() == 0
-    assert float(out["quant_loss"]) == 0.0
+    assert "quant_loss" not in out
     assert out["level_histogram"].shape == (8,)
     assert out["per_dim_usage"].shape == (7, 8)
     assert out["avg_utilization"].dim() == 0

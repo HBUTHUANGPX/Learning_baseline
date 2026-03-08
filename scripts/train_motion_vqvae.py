@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, Mapping
+from typing import Dict, Iterable, Mapping, Tuple
 
 import torch
 from torch.optim import Adam
@@ -139,7 +139,7 @@ def _run_epoch(
     loader: Iterable[Mapping[str, torch.Tensor]],
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
     """Runs one epoch for train or validation mode.
 
     Args:
@@ -149,12 +149,13 @@ def _run_epoch(
         optimizer: Optimizer for training. Use ``None`` for validation.
 
     Returns:
-        Aggregated metric dictionary.
+        Tuple of scalar metric averages and averaged tensor metrics.
     """
     is_train = optimizer is not None
     model.train(is_train)
 
     metric_sum: dict[str, float] = {}
+    tensor_sum: dict[str, torch.Tensor] = {}
     sample_count = 0
 
     progress = tqdm(loader, desc="Train" if is_train else "Val", leave=False)
@@ -182,19 +183,26 @@ def _run_epoch(
         for key, value in losses.items():
             if not isinstance(value, torch.Tensor):
                 continue
-            if value.numel() != 1:
+            if value.numel() == 1:
+                metric_sum[key] = metric_sum.get(key, 0.0) + float(value.detach().cpu()) * batch_size
                 continue
-            metric_sum[key] = metric_sum.get(key, 0.0) + float(value.detach().cpu()) * batch_size
+            if value.ndim < 1:
+                continue
+            detached = value.detach().to(device="cpu", dtype=torch.float32)
+            if key not in tensor_sum:
+                tensor_sum[key] = detached * batch_size
+            else:
+                tensor_sum[key] = tensor_sum[key] + detached * batch_size
 
     if sample_count == 0:
-        return {"loss": 0.0, "recon_loss": 0.0, "quant_loss": 0.0}
+        return {"loss": 0.0, "recon_loss": 0.0}, {}
     if "loss" not in metric_sum:
         metric_sum["loss"] = 0.0
     if "recon_loss" not in metric_sum:
         metric_sum["recon_loss"] = 0.0
-    if "quant_loss" not in metric_sum:
-        metric_sum["quant_loss"] = 0.0
-    return {key: value / sample_count for key, value in metric_sum.items()}
+    scalar_avg = {key: value / sample_count for key, value in metric_sum.items()}
+    tensor_avg = {key: value / sample_count for key, value in tensor_sum.items()}
+    return scalar_avg, tensor_avg
 
 
 def main(args: argparse.Namespace | None = None) -> None:
@@ -243,11 +251,21 @@ def main(args: argparse.Namespace | None = None) -> None:
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(1, args.epochs + 1):
-        train_metrics = _run_epoch(model, train_loader, device, optimizer)
-        val_metrics = _run_epoch(model, val_loader, device, None)
+        train_metrics, train_tensor_metrics = _run_epoch(model, train_loader, device, optimizer)
+        val_metrics, val_tensor_metrics = _run_epoch(model, val_loader, device, None)
 
         tb_logger.log_scalars(train_metrics, epoch, prefix="train")
         tb_logger.log_scalars(val_metrics, epoch, prefix="val")
+        tb_logger.log_tensors(train_tensor_metrics, epoch, prefix="train")
+        tb_logger.log_tensors(val_tensor_metrics, epoch, prefix="val")
+        if "level_histogram" in train_tensor_metrics:
+            tb_logger.log_level_usage(
+                train_tensor_metrics["level_histogram"], epoch, prefix="train"
+            )
+        if "level_histogram" in val_tensor_metrics:
+            tb_logger.log_level_usage(
+                val_tensor_metrics["level_histogram"], epoch, prefix="val"
+            )
 
         checkpoint_path = paths.checkpoint_dir / f"epoch_{epoch:03d}.pt"
         torch.save(

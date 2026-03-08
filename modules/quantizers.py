@@ -125,7 +125,6 @@ class FSQQuantizer(nn.Module):
             A dictionary with:
                 - ``z_q``: Straight-through quantized vectors ``[B, D]``.
                 - ``indices``: Per-dimension level indices ``[B, D]``.
-                - ``quant_loss``: Zero scalar tensor (FSQ has no extra loss).
                 - ``level_histogram``: Global level usage histogram ``[levels]``.
                 - ``per_dim_usage``: Per-dimension level usage ``[D, levels]``.
                 - ``avg_utilization``: Percentage of used bins across all dims.
@@ -153,7 +152,6 @@ class FSQQuantizer(nn.Module):
         return {
             "z_q": z_q_st,
             "indices": indices,
-            "quant_loss": torch.zeros((), device=z_e.device, dtype=z_e.dtype),
             "level_histogram": level_histogram,
             "per_dim_usage": per_dim_usage,
             "avg_utilization": avg_utilization,

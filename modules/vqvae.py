@@ -294,14 +294,12 @@ class FrameFSQVAE(_FrameQuantizedAutoencoderBase):
 
         Returns:
             Dictionary containing total and reconstruction losses. ``quant_loss``
-            is returned for logging compatibility and is expected to be zero.
+            is intentionally absent for FSQ.
         """
         recon = self._reconstruction_loss(outputs["x_hat"], target, self.recon_loss_mode)
-        quant = outputs["quant_loss"]
         return {
             "loss": recon,
             "recon_loss": recon,
-            "quant_loss": quant,
             "effective_bits": outputs["effective_bits"],
             "avg_utilization": outputs["avg_utilization"],
             "level_histogram": outputs["level_histogram"],
