@@ -128,14 +128,13 @@ class _FrameQuantizedAutoencoderBase(nn.Module):
         q = quantizer(z_e)
         decoder_input = torch.cat([q["z_q"], decoder_condition], dim=1)
         x_hat = self.decoder(decoder_input)
-        return {
+        output = {
             "x_hat": x_hat,
             "z_e": z_e,
-            "z_q": q["z_q"],
-            "indices": q["indices"],
-            "quant_loss": q["quant_loss"],
-            "perplexity": q["perplexity"],
         }
+        # Merge quantizer-specific outputs so VQ and FSQ can expose different metrics.
+        output.update(q)
+        return output
 
 
 class FrameVQVAE(_FrameQuantizedAutoencoderBase):
@@ -303,6 +302,8 @@ class FrameFSQVAE(_FrameQuantizedAutoencoderBase):
             "loss": recon,
             "recon_loss": recon,
             "quant_loss": quant,
-            "perplexity": outputs["perplexity"],
+            "effective_bits": outputs["effective_bits"],
+            "avg_utilization": outputs["avg_utilization"],
+            "level_histogram": outputs["level_histogram"],
+            "per_dim_usage": outputs["per_dim_usage"],
         }
-

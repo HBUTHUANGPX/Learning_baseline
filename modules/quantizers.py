@@ -126,7 +126,10 @@ class FSQQuantizer(nn.Module):
                 - ``z_q``: Straight-through quantized vectors ``[B, D]``.
                 - ``indices``: Per-dimension level indices ``[B, D]``.
                 - ``quant_loss``: Zero scalar tensor (FSQ has no extra loss).
-                - ``perplexity``: Global level usage perplexity scalar.
+                - ``level_histogram``: Global level usage histogram ``[levels]``.
+                - ``per_dim_usage``: Per-dimension level usage ``[D, levels]``.
+                - ``avg_utilization``: Percentage of used bins across all dims.
+                - ``effective_bits``: Mean per-dim effective bits from used bins.
         """
         if z_e.ndim != 2:
             raise ValueError(f"FSQ expects [B, D] input, got shape {tuple(z_e.shape)}.")
@@ -139,15 +142,20 @@ class FSQQuantizer(nn.Module):
         z_q = (indices.to(z_e.dtype) / level_scale) * 2.0 - 1.0
         z_q_st = z_bound + (z_q - z_bound).detach()
 
-        flat_indices = indices.reshape(-1)
-        counts = torch.bincount(flat_indices, minlength=self.levels).to(dtype=z_e.dtype)
-        probs = counts / counts.sum().clamp_min(1.0)
-        perplexity = torch.exp(-torch.sum(probs * torch.log(probs + 1e-10)))
+        one_hot = F.one_hot(indices, num_classes=self.levels).to(dtype=z_e.dtype)  # [B, D, L]
+        per_dim_usage = one_hot.mean(dim=0)  # [D, L]
+        level_histogram = per_dim_usage.mean(dim=0)  # [L], averaged over latent dims
+        used_mask = per_dim_usage > 1e-6
+        avg_utilization = used_mask.to(dtype=z_e.dtype).mean() * 100.0
+        unique_per_dim = used_mask.sum(dim=1).clamp(min=1).to(dtype=z_e.dtype)
+        effective_bits = torch.log2(unique_per_dim).mean()
 
         return {
             "z_q": z_q_st,
             "indices": indices,
             "quant_loss": torch.zeros((), device=z_e.device, dtype=z_e.dtype),
-            "perplexity": perplexity,
+            "level_histogram": level_histogram,
+            "per_dim_usage": per_dim_usage,
+            "avg_utilization": avg_utilization,
+            "effective_bits": effective_bits,
         }
-

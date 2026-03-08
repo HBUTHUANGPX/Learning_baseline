@@ -154,12 +154,7 @@ def _run_epoch(
     is_train = optimizer is not None
     model.train(is_train)
 
-    metric_sum = {
-        "loss": 0.0,
-        "recon_loss": 0.0,
-        "quant_loss": 0.0,
-        "perplexity": 0.0,
-    }
+    metric_sum: dict[str, float] = {}
     sample_count = 0
 
     progress = tqdm(loader, desc="Train" if is_train else "Val", leave=False)
@@ -184,11 +179,21 @@ def _run_epoch(
 
         batch_size = int(encoder_input.shape[0])
         sample_count += batch_size
-        for key in metric_sum:
-            metric_sum[key] += float(losses[key].detach().cpu()) * batch_size
+        for key, value in losses.items():
+            if not isinstance(value, torch.Tensor):
+                continue
+            if value.numel() != 1:
+                continue
+            metric_sum[key] = metric_sum.get(key, 0.0) + float(value.detach().cpu()) * batch_size
 
     if sample_count == 0:
-        return {key: 0.0 for key in metric_sum}
+        return {"loss": 0.0, "recon_loss": 0.0, "quant_loss": 0.0}
+    if "loss" not in metric_sum:
+        metric_sum["loss"] = 0.0
+    if "recon_loss" not in metric_sum:
+        metric_sum["recon_loss"] = 0.0
+    if "quant_loss" not in metric_sum:
+        metric_sum["quant_loss"] = 0.0
     return {key: value / sample_count for key, value in metric_sum.items()}
 
 

@@ -48,7 +48,15 @@ def test_frame_fsqvae_forward_and_loss() -> None:
     losses = model.loss_function(target, outputs)
 
     assert outputs["x_hat"].shape == (3, 10)
-    assert set(losses.keys()) == {"loss", "recon_loss", "quant_loss", "perplexity"}
+    assert set(losses.keys()) == {
+        "loss",
+        "recon_loss",
+        "quant_loss",
+        "effective_bits",
+        "avg_utilization",
+        "level_histogram",
+        "per_dim_usage",
+    }
     assert losses["loss"].dim() == 0
     assert torch.allclose(losses["loss"], losses["recon_loss"])
     assert torch.allclose(losses["quant_loss"], torch.zeros_like(losses["quant_loss"]))
@@ -65,6 +73,10 @@ def test_fsq_quantizer_returns_full_indices_and_zero_quant_loss() -> None:
     assert out["indices"].dtype == torch.long
     assert out["quant_loss"].dim() == 0
     assert float(out["quant_loss"]) == 0.0
+    assert out["level_histogram"].shape == (8,)
+    assert out["per_dim_usage"].shape == (7, 8)
+    assert out["avg_utilization"].dim() == 0
+    assert out["effective_bits"].dim() == 0
 
 
 def test_reconstruction_mode_rejects_auto() -> None:
