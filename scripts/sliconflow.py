@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from openai import OpenAI
+from tqdm.auto import tqdm
 
 
 DEFAULT_INPUT = "data/Q1/100STYLE/NPZ_Style_Movement_Metadata.csv"
@@ -151,7 +152,7 @@ def main() -> None:
 
     output_rows: list[dict[str, str]] = []
 
-    for idx, row in enumerate(rows, start=1):
+    for row in tqdm(rows, desc="Generating CLIP prompts", unit="row"):
         style_description = (row.get("style_description") or "").strip()
         movement_label = (row.get("movement_type_label") or "").strip()
         pair_key = make_key(style_description, movement_label)
@@ -175,9 +176,6 @@ def main() -> None:
         out["clip_text_prompt"] = prompt
         out["llm_model"] = args.model
         output_rows.append(out)
-
-        if idx % 20 == 0 or idx == len(rows):
-            print(f"[{idx}/{len(rows)}] processed")
 
     fieldnames = list(rows[0].keys()) + [
         "clip_text_prompt",
