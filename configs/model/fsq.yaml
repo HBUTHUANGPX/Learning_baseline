@@ -3,5 +3,4 @@ embedding_dim: 32
 hidden_dim: 256
 num_embeddings: 512
 fsq_levels: 8
-beta: 0.25
 recon_loss_mode: mse

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from modules.quantizers import FSQQuantizer
 from modules.vqvae import FrameFSQVAE, FrameVQVAE
 
 
@@ -49,3 +50,32 @@ def test_frame_fsqvae_forward_and_loss() -> None:
     assert outputs["x_hat"].shape == (3, 10)
     assert set(losses.keys()) == {"loss", "recon_loss", "quant_loss", "perplexity"}
     assert losses["loss"].dim() == 0
+    assert torch.allclose(losses["loss"], losses["recon_loss"])
+    assert torch.allclose(losses["quant_loss"], torch.zeros_like(losses["quant_loss"]))
+
+
+def test_fsq_quantizer_returns_full_indices_and_zero_quant_loss() -> None:
+    """Tests FSQ quantizer outputs full per-dimension indices and zero quant loss."""
+    quantizer = FSQQuantizer(levels=8)
+    z_e = torch.randn(5, 7)
+    out = quantizer(z_e)
+
+    assert out["z_q"].shape == (5, 7)
+    assert out["indices"].shape == (5, 7)
+    assert out["indices"].dtype == torch.long
+    assert out["quant_loss"].dim() == 0
+    assert float(out["quant_loss"]) == 0.0
+
+
+def test_reconstruction_mode_rejects_auto() -> None:
+    """Tests model rejects unsupported dynamic auto reconstruction mode."""
+    try:
+        _ = FrameVQVAE(
+            encoder_input_dim=8,
+            decoder_condition_dim=0,
+            target_dim=4,
+            recon_loss_mode="auto",
+        )
+    except ValueError:
+        return
+    raise AssertionError("FrameVQVAE must reject recon_loss_mode='auto'.")

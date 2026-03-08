@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fsq-levels", type=int, default=8)
     parser.add_argument("--beta", type=float, default=0.25)
     parser.add_argument(
-        "--recon-loss-mode", choices=["auto", "bce", "mse"], default="mse"
+        "--recon-loss-mode", choices=["bce", "mse"], default="mse"
     )
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
@@ -130,7 +130,6 @@ def _build_model(
         embedding_dim=args.embedding_dim,
         hidden_dim=args.hidden_dim,
         fsq_levels=args.fsq_levels,
-        beta=args.beta,
         recon_loss_mode=args.recon_loss_mode,
     )
 
@@ -207,6 +206,7 @@ def main(args: argparse.Namespace | None = None) -> None:
     paths = create_experiment_paths(log_root=args.log_root)
     tb_logger = TensorboardLogger(paths.tensorboard_dir)
 
+    motion_cache_device = getattr(args, "motion_cache_device", "auto")
     data_config = DataConfig(
         batch_size=args.batch_size,
         val_ratio=args.val_ratio,
@@ -217,7 +217,7 @@ def main(args: argparse.Namespace | None = None) -> None:
         motion_feature_keys=_to_tuple(args.motion_feature_keys),
         motion_frame_stride=args.motion_frame_stride,
         motion_normalize=args.motion_normalize,
-        motion_cache_device=str(device) if args.motion_cache_device == "auto" else args.motion_cache_device,
+        motion_cache_device=str(device) if motion_cache_device == "auto" else motion_cache_device,
         history_frames=args.history_frames,
         future_frames=args.future_frames,
     )
@@ -235,7 +235,6 @@ def main(args: argparse.Namespace | None = None) -> None:
         decoder_condition_dim=decoder_condition_dim,
         target_dim=target_dim,
     ).to(device)
-    print(model)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(1, args.epochs + 1):

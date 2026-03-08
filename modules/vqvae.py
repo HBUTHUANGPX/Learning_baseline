@@ -1,4 +1,10 @@
-"""Frame-level VQ-VAE and FSQ-VAE with decoder history conditioning."""
+"""Frame-level VQ-VAE and FSQ-VAE models for motion reconstruction.
+
+The module provides two quantized autoencoders:
+
+1. ``FrameVQVAE``: classic vector-quantized model with codebook losses.
+2. ``FrameFSQVAE``: finite scalar quantized model with reconstruction-only loss.
+"""
 
 from __future__ import annotations
 
@@ -11,11 +17,11 @@ import torch.nn.functional as F
 from .quantizers import FSQQuantizer, VectorQuantizer
 
 
-class FrameVQVAE(nn.Module):
-    """Vector-quantized autoencoder with conditional decoder.
+class _FrameQuantizedAutoencoderBase(nn.Module):
+    """Shared building blocks for frame-level quantized autoencoders.
 
-    Encoder input is a flattened temporal context window. Decoder receives both
-    quantized latent and flattened history-condition vectors.
+    This base class encapsulates encoder/decoder construction and reconstruction
+    loss logic so VQ and FSQ variants can plug in different quantizers cleanly.
     """
 
     def __init__(
@@ -25,29 +31,24 @@ class FrameVQVAE(nn.Module):
         target_dim: int,
         embedding_dim: int = 32,
         hidden_dim: int = 256,
-        num_embeddings: int = 512,
-        beta: float = 0.25,
         recon_loss_mode: str = "mse",
     ) -> None:
-        """Initializes a conditional frame-level VQ-VAE model.
+        """Initializes common encoder/decoder architecture.
 
         Args:
-            encoder_input_dim: Encoder input feature dimension.
-            decoder_condition_dim: Decoder condition feature dimension.
-            target_dim: Reconstruction target dimension.
+            encoder_input_dim: Input feature dimension for encoder.
+            decoder_condition_dim: Optional decoder condition feature dimension.
+            target_dim: Output reconstruction feature dimension.
             embedding_dim: Latent embedding dimension before quantization.
-            hidden_dim: Hidden MLP width.
-            num_embeddings: Number of VQ codebook vectors.
-            beta: Commitment loss weight.
-            recon_loss_mode: Reconstruction loss mode in
-                ``{"auto", "bce", "mse"}``.
+            hidden_dim: Hidden width for encoder/decoder MLP.
+            recon_loss_mode: Reconstruction loss mode, one of ``{"mse", "bce"}``.
         """
         super().__init__()
         self.encoder_input_dim = int(encoder_input_dim)
         self.decoder_condition_dim = int(decoder_condition_dim)
         self.target_dim = int(target_dim)
         self.embedding_dim = int(embedding_dim)
-        self.recon_loss_mode = str(recon_loss_mode)
+        self.recon_loss_mode = self._resolve_recon_loss_mode(recon_loss_mode)
 
         self.encoder = nn.Sequential(
             nn.Linear(self.encoder_input_dim, hidden_dim),
@@ -66,28 +67,65 @@ class FrameVQVAE(nn.Module):
             nn.Linear(hidden_dim, self.target_dim),
         )
 
-        self.quantizer = VectorQuantizer(
-            num_embeddings=int(num_embeddings),
-            embedding_dim=self.embedding_dim,
-            beta=float(beta),
-        )
+    @staticmethod
+    def _resolve_recon_loss_mode(mode: str) -> str:
+        """Validates and normalizes reconstruction loss mode.
 
-    def forward(
+        Args:
+            mode: Input reconstruction mode text.
+
+        Returns:
+            Normalized mode in lowercase.
+
+        Raises:
+            ValueError: If mode is not supported.
+        """
+        norm = mode.lower().strip()
+        if norm not in {"mse", "bce"}:
+            raise ValueError(
+                f"Unsupported reconstruction loss mode: {mode}. "
+                "Use 'mse' or 'bce'."
+            )
+        return norm
+
+    @staticmethod
+    def _reconstruction_loss(
+        x_hat: torch.Tensor,
+        target: torch.Tensor,
+        mode: str,
+    ) -> torch.Tensor:
+        """Computes reconstruction loss.
+
+        Args:
+            x_hat: Decoder reconstruction tensor.
+            target: Ground-truth target tensor.
+            mode: Loss mode, either ``"mse"`` or ``"bce"``.
+
+        Returns:
+            Batch-averaged reconstruction loss scalar.
+        """
+        if mode == "bce":
+            return F.binary_cross_entropy(x_hat, target, reduction="sum") / target.shape[0]
+        return F.mse_loss(x_hat, target, reduction="sum") / target.shape[0]
+
+    def _forward_with_quantizer(
         self,
         encoder_input: torch.Tensor,
         decoder_condition: torch.Tensor,
+        quantizer: nn.Module,
     ) -> Dict[str, torch.Tensor]:
-        """Runs one forward pass.
+        """Runs shared forward pipeline with a pluggable quantizer.
 
         Args:
-            encoder_input: Encoder input tensor with shape ``[B, D_enc]``.
-            decoder_condition: Decoder condition tensor with shape ``[B, D_cond]``.
+            encoder_input: Encoder input tensor ``[B, D_enc]``.
+            decoder_condition: Decoder condition tensor ``[B, D_cond]``.
+            quantizer: Quantizer module implementing ``forward(z_e)``.
 
         Returns:
-            Dictionary containing reconstruction and quantization outputs.
+            Forward output dictionary with reconstruction and quantization terms.
         """
         z_e = self.encoder(encoder_input)
-        q = self.quantizer(z_e)
+        q = quantizer(z_e)
         decoder_input = torch.cat([q["z_q"], decoder_condition], dim=1)
         x_hat = self.decoder(decoder_input)
         return {
@@ -99,25 +137,83 @@ class FrameVQVAE(nn.Module):
             "perplexity": q["perplexity"],
         }
 
+
+class FrameVQVAE(_FrameQuantizedAutoencoderBase):
+    """Vector-quantized autoencoder with conditional decoder."""
+
+    def __init__(
+        self,
+        encoder_input_dim: int,
+        decoder_condition_dim: int,
+        target_dim: int,
+        embedding_dim: int = 32,
+        hidden_dim: int = 256,
+        num_embeddings: int = 512,
+        beta: float = 0.25,
+        recon_loss_mode: str = "mse",
+    ) -> None:
+        """Initializes conditional frame-level VQ-VAE.
+
+        Args:
+            encoder_input_dim: Encoder input feature dimension.
+            decoder_condition_dim: Decoder condition feature dimension.
+            target_dim: Reconstruction target dimension.
+            embedding_dim: Latent embedding dimension.
+            hidden_dim: Hidden MLP width.
+            num_embeddings: Number of VQ codebook vectors.
+            beta: VQ commitment loss weight.
+            recon_loss_mode: Reconstruction mode in ``{"mse", "bce"}``.
+        """
+        super().__init__(
+            encoder_input_dim=encoder_input_dim,
+            decoder_condition_dim=decoder_condition_dim,
+            target_dim=target_dim,
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+            recon_loss_mode=recon_loss_mode,
+        )
+        self.quantizer = VectorQuantizer(
+            num_embeddings=int(num_embeddings),
+            embedding_dim=self.embedding_dim,
+            beta=float(beta),
+        )
+
+    def forward(
+        self,
+        encoder_input: torch.Tensor,
+        decoder_condition: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Runs VQ-VAE forward pass.
+
+        Args:
+            encoder_input: Encoder input tensor with shape ``[B, D_enc]``.
+            decoder_condition: Decoder condition tensor with shape ``[B, D_cond]``.
+
+        Returns:
+            Dictionary with reconstruction, indices, quantization loss, and perplexity.
+        """
+        return self._forward_with_quantizer(
+            encoder_input=encoder_input,
+            decoder_condition=decoder_condition,
+            quantizer=self.quantizer,
+        )
+
     def loss_function(
         self,
         target: torch.Tensor,
         outputs: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
-        """Computes VQ-VAE loss terms.
+        """Computes VQ-VAE losses.
 
         Args:
             target: Reconstruction target tensor.
-            outputs: Forward outputs from :meth:`forward`.
+            outputs: Forward output dictionary.
 
         Returns:
-            Dictionary containing total loss and components.
+            Dictionary containing total, reconstruction, quantization losses,
+            and perplexity metric.
         """
-        recon = self._reconstruction_loss(
-            outputs["x_hat"],
-            target,
-            self.recon_loss_mode,
-        )
+        recon = self._reconstruction_loss(outputs["x_hat"], target, self.recon_loss_mode)
         quant = outputs["quant_loss"]
         total = recon + quant
         return {
@@ -127,41 +223,13 @@ class FrameVQVAE(nn.Module):
             "perplexity": outputs["perplexity"],
         }
 
-    @staticmethod
-    def _reconstruction_loss(
-        x_hat: torch.Tensor,
-        target: torch.Tensor,
-        mode: str,
-    ) -> torch.Tensor:
-        """Computes reconstruction loss with optional auto mode.
 
-        Args:
-            x_hat: Reconstruction tensor.
-            target: Ground-truth tensor.
-            mode: Loss mode string.
+class FrameFSQVAE(_FrameQuantizedAutoencoderBase):
+    """Finite-scalar-quantized autoencoder with conditional decoder.
 
-        Returns:
-            Batch-averaged reconstruction loss.
-        """
-        mode = mode.lower().strip()
-        if mode not in {"auto", "bce", "mse"}:
-            raise ValueError(f"Unsupported reconstruction loss mode: {mode}")
-        if mode == "auto":
-            target_in_range = bool(
-                torch.logical_and(target >= 0.0, target <= 1.0).all().item()
-            )
-            xhat_in_range = bool(
-                torch.logical_and(x_hat >= 0.0, x_hat <= 1.0).all().item()
-            )
-            mode = "bce" if (target_in_range and xhat_in_range) else "mse"
-
-        if mode == "bce":
-            return F.binary_cross_entropy(x_hat, target, reduction="sum") / target.shape[0]
-        return F.mse_loss(x_hat, target, reduction="sum") / target.shape[0]
-
-
-class FrameFSQVAE(FrameVQVAE):
-    """Finite-scalar-quantized autoencoder with conditional decoder."""
+    FSQ variant uses reconstruction loss as the only training objective and does
+    not add VQ-style commitment/codebook auxiliary losses.
+    """
 
     def __init__(
         self,
@@ -171,21 +239,18 @@ class FrameFSQVAE(FrameVQVAE):
         embedding_dim: int = 32,
         hidden_dim: int = 256,
         fsq_levels: int = 8,
-        beta: float = 0.25,
         recon_loss_mode: str = "mse",
     ) -> None:
-        """Initializes a conditional frame-level FSQ-VAE model.
+        """Initializes conditional frame-level FSQ-VAE.
 
         Args:
             encoder_input_dim: Encoder input feature dimension.
             decoder_condition_dim: Decoder condition feature dimension.
             target_dim: Reconstruction target dimension.
-            embedding_dim: Latent embedding dimension before quantization.
+            embedding_dim: Latent embedding dimension.
             hidden_dim: Hidden MLP width.
             fsq_levels: Number of scalar quantization bins.
-            beta: Commitment loss weight.
-            recon_loss_mode: Reconstruction loss mode in
-                ``{"auto", "bce", "mse"}``.
+            recon_loss_mode: Reconstruction mode in ``{"mse", "bce"}``.
         """
         super().__init__(
             encoder_input_dim=encoder_input_dim,
@@ -193,8 +258,51 @@ class FrameFSQVAE(FrameVQVAE):
             target_dim=target_dim,
             embedding_dim=embedding_dim,
             hidden_dim=hidden_dim,
-            num_embeddings=fsq_levels,
-            beta=beta,
             recon_loss_mode=recon_loss_mode,
         )
-        self.quantizer = FSQQuantizer(levels=int(fsq_levels), beta=float(beta))
+        self.quantizer = FSQQuantizer(levels=int(fsq_levels))
+
+    def forward(
+        self,
+        encoder_input: torch.Tensor,
+        decoder_condition: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Runs FSQ-VAE forward pass.
+
+        Args:
+            encoder_input: Encoder input tensor with shape ``[B, D_enc]``.
+            decoder_condition: Decoder condition tensor with shape ``[B, D_cond]``.
+
+        Returns:
+            Dictionary with reconstruction, scalar-level indices, and metrics.
+        """
+        return self._forward_with_quantizer(
+            encoder_input=encoder_input,
+            decoder_condition=decoder_condition,
+            quantizer=self.quantizer,
+        )
+
+    def loss_function(
+        self,
+        target: torch.Tensor,
+        outputs: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Computes FSQ-VAE losses.
+
+        Args:
+            target: Reconstruction target tensor.
+            outputs: Forward output dictionary.
+
+        Returns:
+            Dictionary containing total and reconstruction losses. ``quant_loss``
+            is returned for logging compatibility and is expected to be zero.
+        """
+        recon = self._reconstruction_loss(outputs["x_hat"], target, self.recon_loss_mode)
+        quant = outputs["quant_loss"]
+        return {
+            "loss": recon,
+            "recon_loss": recon,
+            "quant_loss": quant,
+            "perplexity": outputs["perplexity"],
+        }
+

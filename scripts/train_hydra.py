@@ -37,7 +37,7 @@ def _cfg_to_namespace(cfg: DictConfig) -> SimpleNamespace:
         hidden_dim=int(cfg.model.hidden_dim),
         num_embeddings=int(cfg.model.num_embeddings),
         fsq_levels=int(cfg.model.fsq_levels),
-        beta=float(cfg.model.beta),
+        beta=float(getattr(cfg.model, "beta", 0.25)),
         recon_loss_mode=str(cfg.model.recon_loss_mode),
         batch_size=int(cfg.data.batch_size),
         epochs=int(cfg.train.epochs),
