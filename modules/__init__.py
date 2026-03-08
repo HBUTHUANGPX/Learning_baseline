@@ -7,8 +7,8 @@ from .motion_load import (
     load_motion_feature_sequence,
     resolve_motion_files,
 )
-from .quantizers import FSQQuantizer, VectorQuantizer
-from .vqvae import FrameFSQVAE, FrameVQVAE
+from .quantizers import FSQQuantizer, IFSQuantizer, VectorQuantizer
+from .vqvae import FrameFSQVAE, FrameIFSQVAE, FrameVQVAE
 
 __all__ = [
     "DataConfig",
@@ -19,6 +19,8 @@ __all__ = [
     "resolve_motion_files",
     "VectorQuantizer",
     "FSQQuantizer",
+    "IFSQuantizer",
     "FrameVQVAE",
     "FrameFSQVAE",
+    "FrameIFSQVAE",
 ]

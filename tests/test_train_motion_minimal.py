@@ -89,3 +89,31 @@ def test_build_model_supports_conditioned_decoder() -> None:
     losses = model.loss_function(target, outputs)
     assert outputs["x_hat"].shape == (2, 18)
     assert losses["loss"].dim() == 0
+
+
+def test_build_model_supports_ifsq_variant() -> None:
+    """Tests model factory builds iFSQ model with configurable boundary."""
+    args = Namespace(
+        model="ifsq",
+        embedding_dim=8,
+        hidden_dim=32,
+        num_embeddings=16,
+        fsq_levels=6,
+        ifsq_boundary_fn="sigmoid",
+        ifsq_boundary_scale=1.6,
+        beta=0.25,
+        recon_loss_mode="mse",
+    )
+    model = _build_model(
+        args,
+        encoder_input_dim=24,
+        decoder_condition_dim=12,
+        target_dim=18,
+    )
+    enc = torch.rand(2, 24)
+    cond = torch.rand(2, 12)
+    target = torch.rand(2, 18)
+    outputs = model(enc, cond)
+    losses = model.loss_function(target, outputs)
+    assert outputs["x_hat"].shape == (2, 18)
+    assert losses["loss"].dim() == 0

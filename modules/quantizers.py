@@ -1,10 +1,10 @@
-"""Quantization modules for VQ-VAE and FSQ variants.
+"""Quantization modules for VQ-VAE, FSQ, and iFSQ variants.
 
 This module provides two quantizers:
 
 1. ``VectorQuantizer``: classic VQ codebook quantization with commitment loss.
-2. ``FSQQuantizer``: finite scalar quantization with straight-through gradients
-   and no extra quantization loss terms.
+2. ``FSQQuantizer``: finite scalar quantization with straight-through gradients.
+3. ``IFSQuantizer``: improved FSQ with configurable boundary mapping.
 """
 
 from __future__ import annotations
@@ -128,7 +128,8 @@ class FSQQuantizer(nn.Module):
                 - ``level_histogram``: Global level usage histogram ``[levels]``.
                 - ``per_dim_usage``: Per-dimension level usage ``[D, levels]``.
                 - ``avg_utilization``: Percentage of used bins across all dims.
-                - ``effective_bits``: Mean per-dim effective bits from used bins.
+                - ``effective_bits``: Mean per-dim unique-level bits.
+                - ``effective_bits_entropy``: Mean per-dim entropy bits.
         """
         if z_e.ndim != 2:
             raise ValueError(f"FSQ expects [B, D] input, got shape {tuple(z_e.shape)}.")
@@ -148,6 +149,12 @@ class FSQQuantizer(nn.Module):
         avg_utilization = used_mask.to(dtype=z_e.dtype).mean() * 100.0
         unique_per_dim = used_mask.sum(dim=1).clamp(min=1).to(dtype=z_e.dtype)
         effective_bits = torch.log2(unique_per_dim).mean()
+        per_dim_usage_norm = per_dim_usage / per_dim_usage.sum(dim=1, keepdim=True).clamp_min(1e-10)
+        entropy = -torch.sum(
+            per_dim_usage_norm * torch.log2(per_dim_usage_norm.clamp_min(1e-10)),
+            dim=1,
+        )
+        effective_bits_entropy = entropy.mean()
 
         return {
             "z_q": z_q_st,
@@ -156,4 +163,95 @@ class FSQQuantizer(nn.Module):
             "per_dim_usage": per_dim_usage,
             "avg_utilization": avg_utilization,
             "effective_bits": effective_bits,
+            "effective_bits_entropy": effective_bits_entropy,
+        }
+
+
+class IFSQuantizer(FSQQuantizer):
+    """Improved FSQ quantizer with configurable latent boundary function.
+
+    iFSQ-style quantization keeps the same scalar rounding/discretization as FSQ
+    but replaces the latent bounding transform to improve level utilization.
+    """
+
+    def __init__(
+        self,
+        levels: int | Iterable[int] = 8,
+        boundary_fn: str = "sigmoid",
+        boundary_scale: float = 1.6,
+    ) -> None:
+        """Initializes iFSQ quantizer.
+
+        Args:
+            levels: Number of quantization bins per latent dimension.
+            boundary_fn: Boundary transform name in ``{"sigmoid", "tanh"}``.
+            boundary_scale: Scaling factor applied before boundary transform.
+
+        Raises:
+            ValueError: If boundary function is unsupported.
+        """
+        super().__init__(levels=levels)
+        norm_boundary = boundary_fn.lower().strip()
+        if norm_boundary not in {"sigmoid", "tanh"}:
+            raise ValueError(
+                f"Unsupported boundary_fn: {boundary_fn}. Use 'sigmoid' or 'tanh'."
+            )
+        self.boundary_fn = norm_boundary
+        self.boundary_scale = float(boundary_scale)
+
+    def _bound_latent(self, z_e: torch.Tensor) -> torch.Tensor:
+        """Maps latent values to ``[-1, 1]`` using configured boundary function.
+
+        Args:
+            z_e: Continuous encoder latent tensor ``[B, D]``.
+
+        Returns:
+            Bounded latent tensor in ``[-1, 1]``.
+        """
+        scaled = z_e * self.boundary_scale
+        if self.boundary_fn == "sigmoid":
+            return torch.sigmoid(scaled) * 2.0 - 1.0
+        return torch.tanh(scaled)
+
+    def forward(self, z_e: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Quantizes latent vectors with iFSQ boundary transform.
+
+        Args:
+            z_e: Encoder output with shape ``[B, D]``.
+
+        Returns:
+            Same output dictionary as :class:`FSQQuantizer`.
+        """
+        if z_e.ndim != 2:
+            raise ValueError(f"iFSQ expects [B, D] input, got shape {tuple(z_e.shape)}.")
+
+        z_bound = self._bound_latent(z_e)
+        level_scale = float(self.levels - 1)
+        scaled = (z_bound + 1.0) * 0.5 * level_scale
+        indices = torch.round(scaled).clamp(0, self.levels - 1).to(dtype=torch.long)
+        z_q = (indices.to(z_e.dtype) / level_scale) * 2.0 - 1.0
+        z_q_st = z_bound + (z_q - z_bound).detach()
+
+        one_hot = F.one_hot(indices, num_classes=self.levels).to(dtype=z_e.dtype)
+        per_dim_usage = one_hot.mean(dim=0)
+        level_histogram = per_dim_usage.mean(dim=0)
+        used_mask = per_dim_usage > 1e-6
+        avg_utilization = used_mask.to(dtype=z_e.dtype).mean() * 100.0
+        unique_per_dim = used_mask.sum(dim=1).clamp(min=1).to(dtype=z_e.dtype)
+        effective_bits = torch.log2(unique_per_dim).mean()
+        per_dim_usage_norm = per_dim_usage / per_dim_usage.sum(dim=1, keepdim=True).clamp_min(1e-10)
+        entropy = -torch.sum(
+            per_dim_usage_norm * torch.log2(per_dim_usage_norm.clamp_min(1e-10)),
+            dim=1,
+        )
+        effective_bits_entropy = entropy.mean()
+
+        return {
+            "z_q": z_q_st,
+            "indices": indices,
+            "level_histogram": level_histogram,
+            "per_dim_usage": per_dim_usage,
+            "avg_utilization": avg_utilization,
+            "effective_bits": effective_bits,
+            "effective_bits_entropy": effective_bits_entropy,
         }

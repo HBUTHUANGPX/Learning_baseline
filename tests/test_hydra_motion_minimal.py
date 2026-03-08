@@ -20,6 +20,6 @@ def test_hydra_compose_motion_defaults() -> None:
         cfg = compose(config_name="config")
     args = _cfg_to_namespace(cfg)
 
-    assert args.model in {"vq", "fsq"}
+    assert args.model in {"vq", "fsq", "ifsq"}
     assert args.batch_size > 0
     assert args.motion_file_yaml.endswith("motion_file.yaml")

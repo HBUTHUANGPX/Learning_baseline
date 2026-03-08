@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from modules.data import DataConfig, create_motion_dataloaders
-from modules.vqvae import FrameFSQVAE, FrameVQVAE
+from modules.vqvae import FrameFSQVAE, FrameIFSQVAE, FrameVQVAE
 from utils import TensorboardLogger, create_experiment_paths, set_seed
 
 
@@ -29,11 +29,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train context-conditioned motion VQ/FSQ."
     )
-    parser.add_argument("--model", choices=["vq", "fsq"], default="fsq")
+    parser.add_argument("--model", choices=["vq", "fsq", "ifsq"], default="fsq")
     parser.add_argument("--embedding-dim", type=int, default=32)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--num-embeddings", type=int, default=512)
     parser.add_argument("--fsq-levels", type=int, default=8)
+    parser.add_argument(
+        "--ifsq-boundary-fn",
+        choices=["sigmoid", "tanh"],
+        default="sigmoid",
+    )
+    parser.add_argument("--ifsq-boundary-scale", type=float, default=1.6)
     parser.add_argument("--beta", type=float, default=0.25)
     parser.add_argument(
         "--recon-loss-mode", choices=["bce", "mse"], default="mse"
@@ -123,13 +129,25 @@ def _build_model(
             beta=args.beta,
             recon_loss_mode=args.recon_loss_mode,
         )
-    return FrameFSQVAE(
+    if args.model == "fsq":
+        return FrameFSQVAE(
+            encoder_input_dim=encoder_input_dim,
+            decoder_condition_dim=decoder_condition_dim,
+            target_dim=target_dim,
+            embedding_dim=args.embedding_dim,
+            hidden_dim=args.hidden_dim,
+            fsq_levels=args.fsq_levels,
+            recon_loss_mode=args.recon_loss_mode,
+        )
+    return FrameIFSQVAE(
         encoder_input_dim=encoder_input_dim,
         decoder_condition_dim=decoder_condition_dim,
         target_dim=target_dim,
         embedding_dim=args.embedding_dim,
         hidden_dim=args.hidden_dim,
         fsq_levels=args.fsq_levels,
+        boundary_fn=args.ifsq_boundary_fn,
+        boundary_scale=float(args.ifsq_boundary_scale),
         recon_loss_mode=args.recon_loss_mode,
     )
 

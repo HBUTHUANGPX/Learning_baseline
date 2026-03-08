@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .quantizers import FSQQuantizer, VectorQuantizer
+from .quantizers import FSQQuantizer, IFSQuantizer, VectorQuantizer
 
 
 class _FrameQuantizedAutoencoderBase(nn.Module):
@@ -301,6 +301,79 @@ class FrameFSQVAE(_FrameQuantizedAutoencoderBase):
             "loss": recon,
             "recon_loss": recon,
             "effective_bits": outputs["effective_bits"],
+            "effective_bits_entropy": outputs["effective_bits_entropy"],
+            "avg_utilization": outputs["avg_utilization"],
+            "level_histogram": outputs["level_histogram"],
+            "per_dim_usage": outputs["per_dim_usage"],
+        }
+
+
+class FrameIFSQVAE(_FrameQuantizedAutoencoderBase):
+    """Improved finite-scalar-quantized autoencoder with configurable boundary."""
+
+    def __init__(
+        self,
+        encoder_input_dim: int,
+        decoder_condition_dim: int,
+        target_dim: int,
+        embedding_dim: int = 32,
+        hidden_dim: int = 256,
+        fsq_levels: int = 8,
+        boundary_fn: str = "sigmoid",
+        boundary_scale: float = 1.6,
+        recon_loss_mode: str = "mse",
+    ) -> None:
+        """Initializes frame-level iFSQ-VAE.
+
+        Args:
+            encoder_input_dim: Encoder input feature dimension.
+            decoder_condition_dim: Decoder condition feature dimension.
+            target_dim: Reconstruction target dimension.
+            embedding_dim: Latent embedding dimension.
+            hidden_dim: Hidden MLP width.
+            fsq_levels: Number of scalar quantization bins.
+            boundary_fn: iFSQ boundary function in ``{"sigmoid", "tanh"}``.
+            boundary_scale: Scaling factor before boundary mapping.
+            recon_loss_mode: Reconstruction mode in ``{"mse", "bce"}``.
+        """
+        super().__init__(
+            encoder_input_dim=encoder_input_dim,
+            decoder_condition_dim=decoder_condition_dim,
+            target_dim=target_dim,
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+            recon_loss_mode=recon_loss_mode,
+        )
+        self.quantizer = IFSQuantizer(
+            levels=int(fsq_levels),
+            boundary_fn=boundary_fn,
+            boundary_scale=float(boundary_scale),
+        )
+
+    def forward(
+        self,
+        encoder_input: torch.Tensor,
+        decoder_condition: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Runs iFSQ-VAE forward pass."""
+        return self._forward_with_quantizer(
+            encoder_input=encoder_input,
+            decoder_condition=decoder_condition,
+            quantizer=self.quantizer,
+        )
+
+    def loss_function(
+        self,
+        target: torch.Tensor,
+        outputs: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Computes iFSQ-VAE losses (reconstruction-only objective)."""
+        recon = self._reconstruction_loss(outputs["x_hat"], target, self.recon_loss_mode)
+        return {
+            "loss": recon,
+            "recon_loss": recon,
+            "effective_bits": outputs["effective_bits"],
+            "effective_bits_entropy": outputs["effective_bits_entropy"],
             "avg_utilization": outputs["avg_utilization"],
             "level_histogram": outputs["level_histogram"],
             "per_dim_usage": outputs["per_dim_usage"],
