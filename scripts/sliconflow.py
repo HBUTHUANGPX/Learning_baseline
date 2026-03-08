@@ -14,7 +14,6 @@ from tqdm.auto import tqdm
 DEFAULT_INPUT = "data/Q1/100STYLE/NPZ_Style_Movement_Metadata.csv"
 DEFAULT_OUTPUT = "tmp/NPZ_Style_Movement_Metadata_with_clip_text.csv"
 DEFAULT_CACHE = "tmp/NPZ_Style_Movement_prompt_cache.csv"
-# DEFAULT_MODEL = "Qwen/Qwen3.5-27B"
 DEFAULT_MODEL = "Pro/deepseek-ai/DeepSeek-V3.2"
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 
