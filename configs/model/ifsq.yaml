@@ -1,8 +1,8 @@
 name: ifsq
 embedding_dim: 32
+fsq_levels: 16
 hidden_dim: 256
 num_embeddings: 256
-fsq_levels: 16
 ifsq_boundary_fn: sigmoid
 ifsq_boundary_scale: 1.6
 recon_loss_mode: mse

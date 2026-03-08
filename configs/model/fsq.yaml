@@ -1,6 +1,6 @@
 name: fsq
 embedding_dim: 32
+fsq_levels: 16
 hidden_dim: 256
 num_embeddings: 256
-fsq_levels: 16
 recon_loss_mode: mse

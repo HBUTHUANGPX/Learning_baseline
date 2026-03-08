@@ -6,6 +6,6 @@ motion_group: ""
 motion_feature_keys: [joint_pos, continuous_trigonometric_encoding, delta_yaw,root_height,root_xy_pos]
 motion_frame_stride: 1
 motion_normalize: false
-history_frames: 0
-future_frames: 0
+history_frames: 2
+future_frames: 8
 motion_cache_device: "auto"
