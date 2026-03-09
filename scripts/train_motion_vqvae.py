@@ -270,6 +270,7 @@ def main(args: argparse.Namespace | None = None) -> None:
         decoder_condition_dim=decoder_condition_dim,
         target_dim=target_dim,
     ).to(device)
+    print("Model architecture:", model)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(1, args.epochs + 1):

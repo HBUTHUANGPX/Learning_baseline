@@ -6,7 +6,7 @@ Last Modified: 2026-03-09
 This module bridges existing motion-frame windows with text conditions and
 frozen FSQ latent targets. It is designed for the AR-LDM stage where:
 
-1. ``cond_motion`` uses ``history_frames + current_frame``.
+1. ``cond_motion`` uses ``history_frames`` only.
 2. ``cond_text`` uses one trajectory-level CLIP ``pooler_output`` token.
 3. ``target_latent`` uses frozen FSQ quantized latent ``z_q``.
 
@@ -172,6 +172,7 @@ class FrozenFSQLatentEncoder(nn.Module):
             recon_loss_mode=str(args.get("recon_loss_mode", "mse")),
         )
         model.load_state_dict(state["model_state"], strict=True)
+        print(model)
         model.eval().requires_grad_(False)
 
         self.device_runtime = _resolve_device(device)
@@ -234,9 +235,14 @@ class LatentConditionDataset:
         self.history_frames = int(motion_dataset.history_frames)
         self.future_frames = int(motion_dataset.future_frames)
         self.frame_dim = int(motion_dataset.frame_dim)
-        self.condition_frames = self.history_frames + 1
+        self.condition_frames = self.history_frames
         self.condition_motion_dim = self.condition_frames * self.frame_dim
         self.latent_dim = int(latent_encoder.latent_dim)
+        if self.history_frames > (1 + self.future_frames):
+            raise ValueError(
+                "AR-LDM requires history_frames <= 1 + future_frames. "
+                f"Got history_frames={self.history_frames}, future_frames={self.future_frames}."
+            )
 
         self.sequence_file_names = [path.name for path in motion_dataset.paths]
         if not self.sequence_file_names:
@@ -284,7 +290,7 @@ class LatentConditionDataset:
 
         Returns:
             A dictionary with:
-                - ``cond_motion``: Motion condition ``[B, (n+1)*frame_dim]``.
+                - ``cond_motion``: Motion condition ``[B, n*frame_dim]``.
                 - ``cond_text``: Text condition token ``[B, text_dim]``.
                 - ``target_latent``: Frozen FSQ quantized latent ``[B, latent_dim]``.
                 - ``motion_id``: Sequence id tensor ``[B]``.
@@ -295,7 +301,7 @@ class LatentConditionDataset:
         motion_id = motion_batch["motion_id"]
         frame_id = motion_batch["frame_id"]
 
-        # Condition motion uses only history+current frames from encoder input.
+        # Condition motion uses history frames only (no current frame).
         cond_motion = encoder_input[:, : self.condition_motion_dim]
 
         # Build text condition by trajectory filename lookup.
@@ -475,4 +481,3 @@ def create_latent_condition_loaders(
         "future_frames": dataset.future_frames,
     }
     return train_loader, val_loader, meta
-

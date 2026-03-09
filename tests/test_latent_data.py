@@ -95,6 +95,7 @@ def test_create_latent_condition_loaders_shapes(tmp_path: Path) -> None:
     train_loader, _, meta = create_latent_condition_loaders(cfg)
     batch = next(iter(train_loader))
 
+    assert meta["cond_motion_dim"] == 8
     assert batch["cond_motion"].shape[1] == meta["cond_motion_dim"]
     assert batch["cond_text"].shape[1] == meta["text_dim"]
     assert batch["target_latent"].shape[1] == meta["latent_dim"]
@@ -136,3 +137,27 @@ def test_frozen_fsq_latent_encoder_dim_mismatch_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         _ = encoder.encode_z_q(wrong_input)
 
+
+def test_create_latent_condition_loaders_invalid_n_gt_1_plus_m_raises(tmp_path: Path) -> None:
+    """Tests loader rejects invalid AR setting where n > 1 + m."""
+    motion_path = tmp_path / "a.npz"
+    ckpt_path = tmp_path / "fsq.pt"
+    text_path = tmp_path / "text.pt"
+    _write_motion_npz(motion_path, length=24, joints=2)
+    _write_fsq_checkpoint(ckpt_path)
+    _write_text_token_pt(text_path, npz_name=motion_path.name, text_dim=16)
+
+    cfg = LatentDataConfig(
+        batch_size=2,
+        val_ratio=0.0,
+        motion_files=(str(motion_path),),
+        motion_feature_keys=("joint_pos", "joint_vel"),
+        history_frames=10,
+        future_frames=8,
+        text_token_pt=str(text_path),
+        fsq_checkpoint=str(ckpt_path),
+        fsq_device="cpu",
+        motion_cache_device="cpu",
+    )
+    with pytest.raises(ValueError, match="history_frames <= 1 \\+ future_frames"):
+        _ = create_latent_condition_loaders(cfg)

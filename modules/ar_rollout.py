@@ -5,11 +5,12 @@ Last Modified: 2026-03-09
 
 This module provides production-ready rollout components that connect:
 1. AR-LDM latent sampler (predicting FSQ latent ``z_q``).
-2. Frozen FSQ decoder (mapping latent + motion context to future frames).
+2. Frozen FSQ decoder (mapping latent + motion context to frame blocks).
 
-The rollout strictly follows sliding-window update:
-- next history frames come from the last ``n`` frames of generated future;
-- next current frame is the last generated frame of this step.
+The rollout follows the FSQ data contract used during training:
+- decoder condition uses history only (``n`` frames);
+- decoder output predicts ``current + future`` (``1 + m`` frames);
+- sliding history comes from the rightmost ``n`` frames of the predicted block.
 """
 
 from __future__ import annotations
@@ -106,6 +107,19 @@ class FrozenFSQDecoder(nn.Module):
         Returns:
             Predicted frame block tensor with shape ``[B, target_dim]``.
         """
+        if latent.ndim != 2:
+            raise ValueError(f"latent must be 2D, got {tuple(latent.shape)}.")
+        if latent.shape[1] != self.latent_dim:
+            raise ValueError(
+                f"latent dim mismatch: got {latent.shape[1]}, expected {self.latent_dim}."
+            )
+        if cond_motion.ndim != 2:
+            raise ValueError(f"cond_motion must be 2D, got {tuple(cond_motion.shape)}.")
+        if cond_motion.shape[1] != self.decoder_condition_dim:
+            raise ValueError(
+                "cond_motion dim mismatch: "
+                f"got {cond_motion.shape[1]}, expected {self.decoder_condition_dim}."
+            )
         latent_d = latent.to(self.device_runtime)
         cond_d = cond_motion.to(self.device_runtime)
         dec_in = torch.cat([latent_d, cond_d], dim=1)
@@ -133,78 +147,94 @@ class ARLatentRolloutGenerator:
         self.fsq_decoder = fsq_decoder
         self.config = config
 
-    @staticmethod
-    def _select_future_only(pred_frames: torch.Tensor, future_frames: int) -> torch.Tensor:
-        """Selects final ``future_frames`` from decoder output block.
-
-        Args:
-            pred_frames: Decoder frame block ``[T_block, frame_dim]``.
-            future_frames: Number of future frames to keep.
-
-        Returns:
-            Selected future block ``[future_frames, frame_dim]``.
-        """
-        if pred_frames.shape[0] <= future_frames:
-            return pred_frames
-        return pred_frames[-future_frames:]
-
     @torch.no_grad()
     def rollout(
         self,
-        seed_window: torch.Tensor,
+        seed_history: torch.Tensor,
         text_token: torch.Tensor,
         num_steps: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Generates a full motion sequence with autoregressive sliding window.
 
         Args:
-            seed_window: Initial window ``[n+1, frame_dim]``.
+            seed_history: Initial real motion history ``[n, frame_dim]``.
             text_token: Trajectory-level text token ``[text_dim]``.
             num_steps: Number of autoregressive generation steps.
 
         Returns:
             Tuple:
-                - ``generated_sequence``: Full generated sequence including seed.
-                - ``generated_future_concat``: Concatenation of all generated future blocks.
+                - ``generated_sequence``: Full generated sequence including seed history,
+                  where each AR step appends generated ``current + future`` blocks.
+                - ``generated_future_concat``: Concatenation of all generated
+                  ``current + future`` blocks, shape ``[num_steps * (1 + m), frame_dim]``.
         """
         n = int(self.config.history_frames)
         m = int(self.config.future_frames)
         frame_dim = int(self.config.frame_dim)
 
-        if seed_window.shape != (n + 1, frame_dim):
+        if n > (1 + m):
             raise ValueError(
-                f"seed_window must be {(n + 1, frame_dim)}, got {tuple(seed_window.shape)}."
+                "Invalid rollout config: history_frames must satisfy n <= 1 + m. "
+                f"Got n={n}, m={m}."
+            )
+        if seed_history.shape != (n, frame_dim):
+            raise ValueError(
+                f"seed_history must be {(n, frame_dim)}, got {tuple(seed_history.shape)}."
             )
         if text_token.ndim != 1:
             raise ValueError("text_token must be 1D.")
+        expected_decoder_cond_dim = n * frame_dim
+        if self.fsq_decoder.decoder_condition_dim != expected_decoder_cond_dim:
+            raise ValueError(
+                "FSQ decoder condition dim mismatch: "
+                f"checkpoint expects {self.fsq_decoder.decoder_condition_dim}, "
+                f"but rollout config requires {expected_decoder_cond_dim} (=n*frame_dim)."
+            )
+        expected_target_dim = (1 + m) * frame_dim
+        if self.fsq_decoder.target_dim != expected_target_dim:
+            raise ValueError(
+                "FSQ decoder target dim mismatch: "
+                f"checkpoint expects {self.fsq_decoder.target_dim}, "
+                f"but rollout config requires {expected_target_dim} (=(1+m)*frame_dim)."
+            )
+        ldm_cond_dim = int(getattr(self.ldm_model.config, "cond_motion_dim", -1))
+        expected_ldm_cond_dim = n * frame_dim
+        if ldm_cond_dim != expected_ldm_cond_dim:
+            raise ValueError(
+                "LDM cond_motion dim mismatch: "
+                f"model expects {ldm_cond_dim}, but rollout provides {expected_ldm_cond_dim}."
+            )
 
         device = next(self.ldm_model.parameters()).device
-        curr_window = seed_window.to(device)
+        curr_history = seed_history.to(device)
         cond_text = text_token.to(device).unsqueeze(0)
 
         generated_blocks: list[torch.Tensor] = []
-        full_sequence: list[torch.Tensor] = [curr_window.cpu()]
+        full_sequence: list[torch.Tensor] = [curr_history.cpu()]
 
         for _ in range(num_steps):
-            cond_motion = curr_window.reshape(1, -1)
+            # LDM condition follows training semantics: history only.
+            cond_motion = curr_history.reshape(1, -1)
             latent = self.ldm_model.sample_latent(
                 cond_motion=cond_motion,
                 cond_text=cond_text,
                 steps=self.config.diffusion_steps,
             )
-            pred_flat = self.fsq_decoder.decode(latent=latent, cond_motion=cond_motion)
-            pred_block = pred_flat.reshape(-1, frame_dim)
-            future_block = self._select_future_only(pred_block, future_frames=m)
+            # FSQ decoder condition is history only.
+            decoder_condition = curr_history.reshape(1, -1)
+            pred_flat = self.fsq_decoder.decode(
+                latent=latent,
+                cond_motion=decoder_condition,
+            )
+            pred_block = pred_flat.reshape(1 + m, frame_dim)
 
-            generated_blocks.append(future_block.cpu())
-            full_sequence.append(future_block.cpu())
+            generated_blocks.append(pred_block.cpu())
+            # Keep the full predicted block to match requested sequence semantics.
+            full_sequence.append(pred_block.cpu())
 
-            # Sliding window update: history uses last n frames from generated future.
-            next_hist = future_block[-n:]
-            next_curr = future_block[-1:].clone()
-            curr_window = torch.cat([next_hist, next_curr], dim=0).to(device)
+            # Next cond_motion is the rightmost n frames from previous (1+m) output.
+            curr_history = pred_block[-n:].to(device)
 
         generated_future_concat = torch.cat(generated_blocks, dim=0)
         generated_sequence = torch.cat(full_sequence, dim=0)
         return generated_sequence, generated_future_concat
-
