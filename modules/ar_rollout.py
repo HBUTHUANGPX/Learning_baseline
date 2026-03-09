@@ -1,5 +1,5 @@
 """Autoregressive rollout utilities for latent diffusion motion generation.
-
+ar_rollout.py
 Author: HuangPeixin
 Last Modified: 2026-03-09
 

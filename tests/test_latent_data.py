@@ -71,6 +71,12 @@ def _write_text_token_pt(path: Path, npz_name: str, text_dim: int = 16) -> None:
     torch.save(mapping, path)
 
 
+def _write_text_token_map_pt(path: Path, mapping: dict[str, dict[str, object]]) -> None:
+    """Writes full trajectory text token mapping for multi-file tests."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(mapping, path)
+
+
 def test_create_latent_condition_loaders_shapes(tmp_path: Path) -> None:
     """Tests latent loader output shapes for minimal valid setup."""
     motion_path = tmp_path / "a.npz"
@@ -161,3 +167,51 @@ def test_create_latent_condition_loaders_invalid_n_gt_1_plus_m_raises(tmp_path: 
     )
     with pytest.raises(ValueError, match="history_frames <= 1 \\+ future_frames"):
         _ = create_latent_condition_loaders(cfg)
+
+
+def test_create_latent_condition_loaders_token_mapping_by_motion_id(tmp_path: Path) -> None:
+    """Tests text tokens are indexed by motion_id via prebuilt token bank."""
+    motion_a = tmp_path / "a.npz"
+    motion_b = tmp_path / "b.npz"
+    ckpt_path = tmp_path / "fsq.pt"
+    text_path = tmp_path / "text.pt"
+    _write_motion_npz(motion_a, length=24, joints=2)
+    _write_motion_npz(motion_b, length=24, joints=2)
+    _write_fsq_checkpoint(ckpt_path)
+    _write_text_token_map_pt(
+        text_path,
+        {
+            motion_a.name: {
+                "clip_text_prompt": "A",
+                "pooler_output": torch.full((16,), 1.0),
+            },
+            motion_b.name: {
+                "clip_text_prompt": "B",
+                "pooler_output": torch.full((16,), 2.0),
+            },
+        },
+    )
+
+    cfg = LatentDataConfig(
+        batch_size=8,
+        val_ratio=0.0,
+        motion_files=(str(motion_a), str(motion_b)),
+        motion_feature_keys=("joint_pos", "joint_vel"),
+        history_frames=2,
+        future_frames=8,
+        text_token_pt=str(text_path),
+        fsq_checkpoint=str(ckpt_path),
+        fsq_device="cpu",
+        motion_cache_device="cpu",
+    )
+    train_loader, _, _ = create_latent_condition_loaders(cfg)
+    batch = next(iter(train_loader))
+
+    cond_text = batch["cond_text"]
+    motion_id = batch["motion_id"]
+    expected = torch.where(
+        motion_id.unsqueeze(1) == 0,
+        torch.ones_like(cond_text),
+        torch.full_like(cond_text, 2.0),
+    )
+    assert_close(cond_text, expected)

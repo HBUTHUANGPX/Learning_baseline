@@ -1,5 +1,5 @@
 """Autoregressive Latent Diffusion Model (AR-LDM) core network.
-
+ar_ldm.py
 Author: HuangPeixin
 Last Modified: 2026-03-09
 

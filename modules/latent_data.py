@@ -1,5 +1,5 @@
 """Latent-condition data pipeline for FSQ AR-LDM training.
-
+latent_data.py
 Author: HuangPeixin
 Last Modified: 2026-03-09
 
@@ -254,6 +254,32 @@ class LatentConditionDataset:
             raise KeyError(f"Text token map missing key: {sample_key}")
         sample_token = self._extract_text_token(self.text_token_map[sample_key])
         self.text_dim = int(sample_token.numel())
+        self.text_token_bank = self._build_text_token_bank()
+
+    def _build_text_token_bank(self) -> torch.Tensor:
+        """Builds dense ``seq_id -> text_token`` bank for vectorized indexing.
+
+        Returns:
+            Text token bank with shape ``[num_sequences, text_dim]`` on the same
+            device as the wrapped motion dataset cache.
+
+        Raises:
+            KeyError: If any sequence key is missing in text token map.
+            ValueError: If any token dimension is inconsistent.
+        """
+        token_device = self.motion_dataset.sequence_bank.device
+        rows: list[torch.Tensor] = []
+        for npz_name in self.sequence_file_names:
+            if npz_name not in self.text_token_map:
+                raise KeyError(f"Text token map missing npz key: {npz_name}")
+            token = self._extract_text_token(self.text_token_map[npz_name])
+            if token.numel() != self.text_dim:
+                raise ValueError(
+                    f"Text token dim mismatch for {npz_name}: "
+                    f"got {token.numel()}, expected {self.text_dim}."
+                )
+            rows.append(token)
+        return torch.stack(rows, dim=0).to(device=token_device, dtype=torch.float32)
 
     def __len__(self) -> int:
         """Returns number of valid center windows in wrapped motion dataset."""
@@ -304,20 +330,8 @@ class LatentConditionDataset:
         # Condition motion uses history frames only (no current frame).
         cond_motion = encoder_input[:, : self.condition_motion_dim]
 
-        # Build text condition by trajectory filename lookup.
-        cond_text_list: list[torch.Tensor] = []
-        for seq_id in motion_id.detach().cpu().tolist():
-            npz_name = self.sequence_file_names[int(seq_id)]
-            if npz_name not in self.text_token_map:
-                raise KeyError(f"Text token map missing npz key: {npz_name}")
-            token = self._extract_text_token(self.text_token_map[npz_name])
-            if token.numel() != self.text_dim:
-                raise ValueError(
-                    f"Text token dim mismatch for {npz_name}: "
-                    f"got {token.numel()}, expected {self.text_dim}."
-                )
-            cond_text_list.append(token)
-        cond_text = torch.stack(cond_text_list, dim=0).to(encoder_input.device)
+        # Vectorized token lookup by sequence id without Python loops over batch.
+        cond_text = self.text_token_bank[motion_id]
 
         # Frozen FSQ encoder builds latent target from full encoder window.
         target_latent = self.latent_encoder.encode_z_q(encoder_input)
@@ -336,7 +350,8 @@ class _TensorIndexSubset:
 
     def __init__(self, dataset: LatentConditionDataset, indices: torch.Tensor) -> None:
         self.dataset = dataset
-        self.indices = indices.to(dtype=torch.long)
+        index_device = dataset.motion_dataset.center_seq_ids.device
+        self.indices = indices.to(device=index_device, dtype=torch.long)
 
     def __len__(self) -> int:
         """Returns subset sample count."""
@@ -386,11 +401,16 @@ class LatentConditionBatchLoader:
         indices = self.dataset.indices
         if self.shuffle and indices.numel() > 1:
             generator = torch.Generator().manual_seed(self.seed + self._epoch)
-            order = indices[torch.randperm(indices.numel(), generator=generator)]
+            # generator = torch.Generator(device=indices.device).manual_seed(self.seed + self._epoch)
+            # Build permutation on CPU for deterministic generator behavior, then
+            # move to index tensor device for advanced indexing.
+            order_idx = torch.randperm(indices.numel(), generator=generator)
+            if indices.device.type != "cpu":
+                order_idx = order_idx.to(indices.device)
+            order = indices[order_idx]
         else:
             order = indices
         self._epoch += 1
-
         for start in range(0, int(order.numel()), self.batch_size):
             batch_indices = order[start : start + self.batch_size]
             yield self.dataset.dataset.get_batch(batch_indices)

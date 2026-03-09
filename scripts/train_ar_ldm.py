@@ -1,5 +1,5 @@
 """Train AR-LDM on FSQ latent targets with text and motion conditions.
-
+train_ar_ldm.py
 Author: HuangPeixin
 Last Modified: 2026-03-09
 
@@ -184,6 +184,7 @@ def main(args: argparse.Namespace | None = None) -> None:
         weight_decay=float(cfg.optim.weight_decay),
     )
     model = ARLDMTransformer(model_cfg).to(device)
+    print("Model architecture:", model)
     optimizer, scheduler = model.configure_optimizers()
 
     paths = create_experiment_paths(log_root=str(cfg.log.root))
