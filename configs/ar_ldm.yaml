@@ -1,0 +1,39 @@
+data:
+  batch_size: 256
+  val_ratio: 0.2
+  motion_files: []
+  motion_file_yaml: configs/data/motion_file.yaml
+  motion_group: xsens_bvh
+  motion_feature_keys: [joint_pos, continuous_trigonometric_encoding, delta_yaw, root_height, root_xy_pos]
+  motion_frame_stride: 1
+  motion_normalize: false
+  motion_cache_device: auto
+  history_frames: 2
+  future_frames: 8
+  text_token_pt: tmp/clip_text_pooler_by_npz.pt
+  fsq_checkpoint: ""
+  fsq_device: auto
+
+model:
+  model_dim: 512
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
+  timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  backbone_type: transformer
+  fusion_type: cross_attention
+
+optim:
+  lr: 0.0001
+  weight_decay: 0.0001
+
+train:
+  epochs: 100
+  seed: 42
+  deterministic: false
+  device: cpu
+
+log:
+  root: ./log_ar_ldm
