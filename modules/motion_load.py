@@ -374,7 +374,13 @@ class MotionFrameDataset(Dataset):
         urdf_graph = UrdfGraph(
             "/home/hpx/HPX_LOCO_2/mimic_baseline/general_motion_tracker_whole_body_teleoperation/general_motion_tracker_whole_body_teleoperation/assets/Q1/urdf/Q1_wo_hand_rl.urdf"
         )  # Example of using UrdfGraph if needed.
+        isaac_sim_joint_name = urdf_graph.bfs_joint_order()
         isaac_sim_link_name = urdf_graph.bfs_link_order()
+        mujoco_joint_name = urdf_graph.joint_order_by_file()
+        mujoco_link_name = urdf_graph.link_order_by_file()
+        self.isaac_sim2mujoco_index = [
+            isaac_sim_joint_name.index(name) for name in mujoco_joint_name
+        ]
         motion_reference_body = "torso_link"
         motion_body_names = [
             "pelvis_link",
