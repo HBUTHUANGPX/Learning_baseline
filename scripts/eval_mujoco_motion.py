@@ -15,7 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
+from modules.motion_load import MotionDatasetConfig, MotionFrameDataset
 from modules.vqvae import FrameFSQVAE, FrameVQVAE
+from utils.math import quat_from_euler_xyz
 from utils.load_motion_file import collect_npz_paths
 
 
@@ -45,6 +47,20 @@ def _flatten(array: np.ndarray) -> np.ndarray:
     if array.ndim == 1:
         return array.astype(np.float32)[:, None]
     return array.astype(np.float32).reshape(array.shape[0], -1)
+
+
+def _flatten_temporal_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    """Flattens a temporal tensor to ``[T, D]``.
+
+    Args:
+        tensor: Input tensor with temporal axis at dim-0.
+
+    Returns:
+        Flattened tensor.
+    """
+    if tensor.ndim == 1:
+        return tensor.float().unsqueeze(-1)
+    return tensor.float().reshape(tensor.shape[0], -1)
 
 
 def _resolve_motion_file(motion_file: str, motion_yaml: str, motion_group: str) -> Path:
@@ -84,7 +100,7 @@ def _load_arrays(
     feature_keys: tuple[str, ...],
     qpos_key: str,
     stride: int,
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, float, MotionFrameDataset]:
     """Loads model input feature array and qpos target array.
 
     Args:
@@ -96,28 +112,66 @@ def _load_arrays(
     Returns:
         Tuple of ``(features, qpos, fps)``.
     """
-    with np.load(str(path)) as data:
-        parts: list[np.ndarray] = []
-        lengths: list[int] = []
-        for key in feature_keys:
-            if key not in data:
-                raise KeyError(f"Feature key '{key}' not found in {path}")
-            part = _flatten(data[key])
-            parts.append(part)
-            lengths.append(part.shape[0])
-        if qpos_key not in data:
-            raise KeyError(f"qpos_key '{qpos_key}' not found in {path}")
-        qpos = _flatten(data[qpos_key])
-        lengths.append(qpos.shape[0])
-        if len(set(lengths)) != 1:
-            raise ValueError(f"Inconsistent sequence lengths in {path}: {lengths}")
-        fps = float(np.asarray(data["fps"]).reshape(-1)[0]) if "fps" in data else 30.0
+    dataset = MotionFrameDataset(
+        MotionDatasetConfig(
+            motion_files=(str(path),),
+            feature_keys=feature_keys,
+            frame_stride=stride,
+            normalize=False,
+            cache_device="cpu",
+            history_frames=0,
+            future_frames=0,
+        )
+    )
+    features = dataset._sequence_feature_tensors[0].detach().cpu().numpy().astype(np.float32)
 
-    features = np.concatenate(parts, axis=1)
+    if not hasattr(dataset, qpos_key):
+        raise KeyError(
+            f"qpos_key '{qpos_key}' is not available in dataset members. "
+            "If it is derived, ensure motion_load builds it."
+        )
+    qpos_tensor = dataset._get_member_sequence_tensor(qpos_key, sequence_id=0)
+    qpos_flat = _flatten_temporal_tensor(qpos_tensor)
     if stride > 1:
-        features = features[::stride]
-        qpos = qpos[::stride]
-    return features, qpos, fps
+        qpos_flat = qpos_flat[::stride]
+    qpos = qpos_flat.detach().cpu().numpy().astype(np.float32)
+
+    if features.shape[0] != qpos.shape[0]:
+        raise ValueError(
+            f"Inconsistent feature/qpos lengths after stride: {features.shape[0]} vs {qpos.shape[0]}"
+        )
+
+    with np.load(str(path)) as data:
+        fps = float(np.asarray(data["fps"]).reshape(-1)[0]) if "fps" in data else 30.0
+    return features, qpos, fps, dataset
+
+
+def _build_feature_slices(
+    dataset: MotionFrameDataset,
+    feature_keys: tuple[str, ...],
+    stride: int,
+) -> dict[str, tuple[int, int]]:
+    """Builds per-key feature slices in concatenated frame feature vector.
+
+    Args:
+        dataset: Motion dataset built with the same feature key order.
+        feature_keys: Ordered keys used for frame concatenation.
+        stride: Frame stride applied to features.
+
+    Returns:
+        Slice map ``key -> (start, end)`` in one frame feature vector.
+    """
+    slice_map: dict[str, tuple[int, int]] = {}
+    offset = 0
+    for key in feature_keys:
+        member = dataset._get_member_sequence_tensor(key, sequence_id=0)
+        part = _flatten_temporal_tensor(member)
+        if stride > 1:
+            part = part[::stride]
+        width = int(part.shape[1])
+        slice_map[key] = (offset, offset + width)
+        offset += width
+    return slice_map
 
 
 def _build_eval_samples(
@@ -190,6 +244,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qpos-dim", type=int, default=0)
     parser.add_argument("--write-source", choices=["recon", "gt"], default="recon")
     parser.add_argument("--frame-stride", type=int, default=1)
+    parser.add_argument("--use-isaac-to-mujoco-map", action="store_true")
+    parser.add_argument(
+        "--inverse-from-recon",
+        action="store_true",
+        help=(
+            "Inverse-convert reconstructed feature frame to raw root pose based on "
+            "motion_load derived keys and write qpos[0:7] in MuJoCo."
+        ),
+    )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
@@ -205,8 +268,13 @@ def main() -> None:
         args.motion_file, args.motion_file_yaml, args.motion_group
     )
     feature_keys = _to_tuple(args.motion_feature_keys)
-    features, qpos_gt, fps = _load_arrays(
+    features, qpos_gt, fps, motion_dataset = _load_arrays(
         motion_path, feature_keys, args.qpos_key, args.frame_stride
+    )
+    feature_slices = _build_feature_slices(
+        dataset=motion_dataset,
+        feature_keys=feature_keys,
+        stride=args.frame_stride,
     )
 
     history_frames = int(train_args.get("history_frames", 0))
@@ -245,7 +313,6 @@ def main() -> None:
             embedding_dim=int(train_args["embedding_dim"]),
             hidden_dim=int(train_args["hidden_dim"]),
             fsq_levels=int(train_args["fsq_levels"]),
-            beta=float(train_args["beta"]),
             recon_loss_mode=str(train_args["recon_loss_mode"]),
         )
 
@@ -271,6 +338,19 @@ def main() -> None:
         raise ValueError("qpos write range exceeds MuJoCo qpos size.")
 
     dt = 1.0 / max(float(fps), 1e-6)
+    root_xy_origin = None
+    state: dict[str, float] = {}
+    if args.inverse_from_recon:
+        if not hasattr(motion_dataset, "root_pos_w") or not hasattr(motion_dataset, "root_euler_w"):
+            raise AttributeError(
+                "inverse_from_recon requires root_pos_w and root_euler_w members from motion dataset."
+            )
+        root_pos = motion_dataset._get_member_sequence_tensor("root_pos_w", sequence_id=0)
+        root_euler = motion_dataset._get_member_sequence_tensor("root_euler_w", sequence_id=0)
+        root_xy_origin = root_pos[0, 0:2].detach().cpu().numpy().astype(np.float32)*0
+        # Playback starts from center=history_frames.
+        start_center = int(history_frames)
+        state["yaw"] = float(root_euler[start_center, 2].item())*0
 
     def _step(eval_index: int) -> None:
         """Runs one inference step and writes qpos to MuJoCo."""
@@ -285,6 +365,8 @@ def main() -> None:
         )
         with torch.no_grad():
             x_hat = model(enc, cond)["x_hat"].detach().cpu().numpy().reshape(-1)
+        target_window = x_hat.reshape(1 + future_frames, features.shape[1])
+        curr_feature = target_window[0]
         start = int(args.qpos_slice_start)
         stop = start + qpos_dim
         # Reconstruction target is [current, future], so this slice is applied
@@ -296,7 +378,62 @@ def main() -> None:
             if args.write_source == "gt"
             else recon_qpos
         )
-        mj_data.qpos[args.qpos_start_idx : args.qpos_start_idx + qpos_dim] = write_qpos
+        if args.write_source == "gt":
+            print(f"Writing GT qpos for eval index {eval_index}: {write_qpos}")
+        if args.use_isaac_to_mujoco_map:
+            # print("Using Isaac to MuJoCo joint mapping.")
+            if not hasattr(motion_dataset, "isaac_sim2mujoco_index"):
+                raise AttributeError(
+                    "motion_dataset missing isaac_sim2mujoco_index for joint remapping."
+                )
+            map_idx = motion_dataset.isaac_sim2mujoco_index
+            if len(map_idx) != write_qpos.shape[0]:
+                raise ValueError(
+                    f"isaac->mujoco map length {len(map_idx)} does not match qpos dim {write_qpos.shape[0]}."
+                )
+            write_qpos = write_qpos[np.asarray(map_idx, dtype=np.int64)]
+
+        # Optional inverse conversion from reconstructed derived features to root qpos.
+        if args.inverse_from_recon:
+            required = (
+                "root_xy_pos",
+                "root_height",
+                "continuous_trigonometric_encoding",
+                "delta_yaw",
+            )
+            if all(key in feature_slices for key in required):
+                xy_s, xy_e = feature_slices["root_xy_pos"]
+                h_s, h_e = feature_slices["root_height"]
+                c_s, c_e = feature_slices["continuous_trigonometric_encoding"]
+                d_s, d_e = feature_slices["delta_yaw"]
+                root_xy_rel = curr_feature[xy_s:xy_e]
+                root_h = curr_feature[h_s:h_e]
+                cte = curr_feature[c_s:c_e]
+                delta_yaw = curr_feature[d_s:d_e]
+                if cte.shape[0] >= 4 and root_xy_origin is not None and "yaw" in state:
+                    roll = float(np.arctan2(cte[0], cte[1] + 1.0))
+                    pitch = float(np.arctan2(cte[2], cte[3] + 1.0))
+                    yaw = float(state["yaw"])
+                    root_xyz = np.array(
+                        [root_xy_origin[0] + root_xy_rel[0], root_xy_origin[1] + root_xy_rel[1], root_h[0]],
+                        dtype=np.float32,
+                    )
+                    quat = (
+                        quat_from_euler_xyz(
+                            torch.tensor([roll], dtype=torch.float32),
+                            torch.tensor([pitch], dtype=torch.float32),
+                            torch.tensor([yaw], dtype=torch.float32),
+                        )[0]
+                        .detach()
+                        .cpu()
+                        .numpy()
+                        .astype(np.float32)
+                    )
+                    mj_data.qpos[0:3] = root_xyz
+                    mj_data.qpos[3:7] = quat
+                    state["yaw"] = yaw + float(delta_yaw[0])
+
+        mj_data.qpos[7:] = write_qpos
         mujoco.mj_forward(mj_model, mj_data)
 
     if args.headless:
